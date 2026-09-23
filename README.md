@@ -1,0 +1,425 @@
+# Stray Keys Sifter
+
+Собирает публичные VPN-ключи из открытых источников, отсеивает мёртвые по TCP, определяет страну сервера по IP, складывает живые в один файл для импорта в клиент.
+
+## Что даёт на выходе
+
+`data/exports/checked.txt` — список ключей, у которых **TCP-порт открыт**. Это самая дешёвая проверка: она отсеивает заведомо мёртвое (сервер не отвечает, порт закрыт, DNS не резолвится), но **не проверяет, что туннель реально работает**.
+
+Из ключей, прошедших TCP-чек, рабочими в клиенте окажется **от 1% до 15%**. Точный процент зависит от:
+
+- возраста источника (свежие публикации дают больше живых, старые — почти ноль),
+- загруженности сервера (популярные конфиги быстро перегорают),
+- протокола (Reality живёт дольше, чем plain VLESS),
+- региона (RU-whitelist сервера пропускают только российский трафик и не откроют google.com).
+
+Почему так: чтобы отличить «порт открыт» от «туннель работает», нужно поднять соединение через сам ключ (Xray или sing-box) и попробовать HTTP-запрос. Это тяжело, требует бинарь движка и чувствительно к его версии. Stray Keys Sifter этого не делает — он даёт **широкий список кандидатов**, а финальный отбор делает клиент (Throne, Hiddify, v2rayN и т.п.), который всё равно прогоняет тест задержки после импорта.
+
+**Практический смысл:** инструмент сокращает список с «десятки тысяч строк из подписок» до «несколько сотен кандидатов, за которые стоит зацепиться в клиенте». Экономит время на отсеве мусора, но не даёт готовый набор рабочих ключей.
+
+Если нужен список гарантированно рабочих — его надо получить финальным тестом в клиенте. `checked.txt` — это входные данные для такого теста.
+
+Делал для себя, чтобы автоматом раз в N часов собирались ключи из различных источников и отсеивались абсолютно мёртвые на случай, если всё имеющееся переблочат, а я давно подписки не обновлял.
+
+## Возможности
+
+- Загрузка источников по списку URL. Список задаётся в `config.json → sources`, правится без изменения кода.
+- Парсинг всех популярных форматов в одном источнике: `vless://`, `vmess://`, `trojan://`, `ss://`, `socks5://`, `http(s)://`, `tg://proxy?...`, base64-подписки, Clash YAML, CSV с заголовком и без, plain `host:port`.
+- Дедупликация по `uuid@host:port` (или `host:port` для схем без идентификатора).
+- TCP-connect всех схем с мульти-IP резолвом (все A/AAAA-записи), 3 попытки с растущим таймаутом (3→6→9 с) и опциональным TLS-handshake (`mode: "tcp+tls"`).
+- GeoIP по IP сервера: оффлайн-mmdb, HTTP-fallback через ip-api.com, постоянный кэш `IP → страна`. CDN-фронты (Cloudflare, Fastly, Akamai и др.) не считаются за страну origin — для них берётся страна из remark ключа.
+- Фильтр по странам: `checks.exclude_countries: ["RU"]` — ключи из этих стран не попадут в экспорт.
+- Sanitize URI для клиентов на sing-box: удаление `?ed=N` из WebSocket path, замена `type=raw` → `type=tcp`.
+- Экспорт: общий `checked.txt` + отдельный файл на каждую схему.
+- Статистика источников: сколько найдено, сколько уникальных, сколько живых, сколько есть только здесь, когда последний раз менялось.
+- История прогонов.
+- Фоновый сервис: Windows — detached subprocess, Linux/macOS — двойной fork. Без systemd и SCM.
+
+## Установка
+
+Требуется Python 3.10+.
+
+```bash
+git clone https://github.com/Normone/Stray-Keys-Sifter.git
+cd Stray-Keys-Sifter
+pip install -e .
+```
+
+Опционально — оффлайн-GeoIP:
+
+```bash
+pip install -e ".[geoip]"
+straysifter geoip-update
+```
+
+Без mmdb работает HTTP-lookup через ip-api.com (100 IP за запрос, 15 запросов/мин).
+
+## Быстрый старт
+
+```bash
+# создать config.json с дефолтами
+straysifter-service install
+
+# отредактировать config.json → sources, вписать свои URL
+# затем полный цикл: fetch + TCP-чек + GeoIP + save + export
+straysifter collect
+
+# результат
+cat data/exports/checked.txt
+```
+
+## Команды
+
+| Команда | Описание |
+|---|---|
+| `straysifter collect` | Полный цикл: fetch → parse → check → GeoIP → save → export |
+| `straysifter sources` | Только загрузить источники в архив, без проверок |
+| `straysifter sources-stats` | Таблица по источникам: найдено / уникально / вклад / живых / статус |
+| `straysifter inspect <pattern>` | Разбор одного источника: что нашли, DNS, TCP-чек |
+| `straysifter export-source <pattern>` | Выгрузить один источник (`_alive.txt` + `_all.txt`) |
+| `straysifter export` | Пересобрать `checked.txt` из рабочей базы, без новых проверок |
+| `straysifter geoip-update` | Скачать mmdb для оффлайн-GeoIP |
+| `straysifter geoip-clear` | Очистить кэш `data/geoip_cache.json` |
+| `straysifter status` | Состояние базы, расписание, сводка по источникам |
+| `straysifter history` | Последние N прогонов |
+| `straysifter clean` | Очистить базу / историю / статистику |
+
+### Флаги
+
+| Флаг | Где применим | Описание |
+|---|---|---|
+| `-v`, `--verbose` | любая команда | DEBUG-уровень логов |
+| `--mode tcp\|tcp+tls` | `collect`, `export-source` | Префильтр: только TCP или TCP + TLS-handshake |
+| `--exclude-country RU,CN` | `collect`, `export`, `export-source` | Исключить страны из экспорта (дополняет `config.json`) |
+| `--no-geoip` | `collect`, `export`, `export-source` | Не использовать GeoIP в этом вызове |
+| `--json` | `sources-stats` | Вывод в JSON |
+| `--limit N` | `inspect` | Сколько примеров показать |
+| `--check` | `inspect` | TCP-чек endpoints |
+| `--resolve` | `inspect` | Показать DNS-резолв |
+| `--from URL` | `geoip-update` | Скачать mmdb из своего источника |
+| `--working` / `--history` / `--sources` | `clean` | Что именно очистить |
+
+## Управление сервисом
+
+Одна и та же команда на всех ОС:
+
+```bash
+straysifter-service install       # поставить + создать config.json
+straysifter-service start
+straysifter-service stop
+straysifter-service restart
+straysifter-service status
+straysifter-service uninstall     # остановить и удалить PID-файл
+```
+
+Реализация по платформам:
+
+- **Windows** — detached subprocess. Проверка живости через `OpenProcess`/`GetExitCodeProcess`. Остановка `taskkill` → 30 секунд на graceful shutdown → `taskkill /F`.
+- **Linux/macOS** — двойной fork (`os.fork` × 2 + `setsid`). Проверка живости через `os.kill(pid, 0)`. Остановка `SIGTERM` → 30 секунд → `SIGKILL`.
+
+Логи — `straysifter.log` в корне проекта, ротация 5 MB × 5.
+PID — `straysifter.pid`.
+Автозапуск при загрузке — на откуп системе: Task Scheduler, `cron @reboot`, launchd.
+
+## Меню управления
+
+`manage.cmd` (Windows) или `./manage.sh` (Linux/macOS) — текстовое меню для всех команд выше: циклы, конфиг, сервис, логи, папки.
+
+```bash
+chmod +x manage.sh
+./manage.sh
+```
+
+Меню не требует ввода команд — выбор пункта цифрой или буквой.
+
+## Конфиг
+
+`config.json` создаётся при первом `straysifter-service install` с дефолтами.
+
+```json
+{
+  "fetcher": {
+    "proxy": null,
+    "prefer": "direct",
+    "timeout": 25,
+    "workers": 5,
+    "ua": "Mozilla/5.0 (straysifter/2.0)"
+  },
+  "checks": {
+    "mode": "tcp",
+    "tcp_timeout": 3.0,
+    "tcp_timeout_step": 3.0,
+    "tcp_timeout_max": 9.0,
+    "tcp_workers": 120,
+    "tcp_attempts": 3,
+    "tcp_retry_jitter": 0.4,
+    "tcp_sequential_max_ips": 3,
+    "tcp_sequential_after": 2,
+    "tcp_endpoint_budget": 30.0,
+    "tls_timeout": 4.0,
+    "tls_workers": 30,
+    "exclude_countries": []
+  },
+  "geoip": {
+    "enabled": true,
+    "proxy": null,
+    "http_fallback": true,
+    "db_path": "",
+    "detect_cdn": true
+  },
+  "sources": [
+    "https://example.com/sub.txt"
+  ],
+  "schedule": {
+    "fetch_hours": 6.0,
+    "check_minutes": 360.0
+  },
+  "storage": {
+    "dir": "data"
+  }
+}
+```
+
+### fetcher
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `proxy` | str \| null | `socks5h://127.0.0.1:1080` или `http://...`. Используется **только** для загрузки источников. Проверки всегда идут напрямую. |
+| `prefer` | str | `direct` — сначала напрямую, потом через прокси. `proxy` — наоборот. `direct-only` / `proxy-only` — без fallback. |
+| `timeout` | int | Таймаут одного HTTP-запроса, секунды. |
+| `workers` | int | Параллельных загрузок источников. |
+| `ua` | str | User-Agent. |
+
+### checks
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `mode` | str | `tcp` — только TCP-connect. `tcp+tls` — дополнительно TLS-handshake. |
+| `tcp_timeout` | float | Таймаут первой попытки, секунды. |
+| `tcp_timeout_step` | float | Прирост таймаута на каждой следующей попытке. |
+| `tcp_timeout_max` | float | Потолок таймаута. |
+| `tcp_workers` | int | Параллельных TCP-проверок. 120 безопасно для Windows. |
+| `tcp_attempts` | int | Попыток на endpoint. |
+| `tcp_retry_jitter` | float | Случайная пауза перед повтором, до N секунд. |
+| `tcp_sequential_max_ips` | int | Для хостов с числом IP ≤ N включить последовательный обход. |
+| `tcp_sequential_after` | int | С какой попытки переходить на последовательный обход. |
+| `tcp_endpoint_budget` | float | Жёсткий бюджет на один endpoint, секунды. `0` — без ограничения. |
+| `tls_timeout` | float | Таймаут TLS-handshake. |
+| `tls_workers` | int | Параллельных TLS-handshake. |
+| `exclude_countries` | list[str] | ISO-коды стран, которые не попадут в экспорт. Пусто — экспортировать все. |
+
+### geoip
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `enabled` | bool | Определять страну по IP, а не по remark. |
+| `proxy` | str \| null | Прокси **только** для HTTP-запросов geoip (ip-api.com). |
+| `http_fallback` | bool | Разрешить HTTP-lookup, если нет mmdb. |
+| `db_path` | str | Путь к `.mmdb`. Пусто → `data/dbip-country-lite.mmdb`. |
+| `detect_cdn` | bool | Если IP принадлежит CDN — страна не ставится, берётся из remark. |
+
+### sources
+
+Массив URL. Один плоский список, без деления по протоколам. Парсер сам разбирается, что в тексте: список URI, base64-подписка, Clash YAML, CSV, plain `host:port`.
+
+Пример:
+
+```json
+"sources": [
+  "https://raw.githubusercontent.com/user/repo/main/sub.txt",
+  "https://gitverse.ru/api/repos/user/repo/raw/branch/main/whitelist.txt",
+  "https://gist.githubusercontent.com/user/id/raw/all.yaml"
+]
+```
+
+### schedule
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `fetch_hours` | float | Как часто обновлять источники (через прокси, если задан). |
+| `check_minutes` | float | Как часто прогонять проверки (напрямую). |
+
+### storage
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `dir` | str | Куда складывать базу, архив, экспорты. |
+
+### Env-переменные
+
+Перекрывают config:
+
+- `SIFTER_PROXY` — прокси для fetch.
+- `SIFTER_FETCH_PREFER` — `direct` / `proxy` / ...
+- `SIFTER_MODE` — `tcp` / `tcp+tls`.
+- `SIFTER_EXCLUDE_COUNTRIES` — `RU,CN`.
+- `SIFTER_GEOIP` — `1` / `0`.
+- `SIFTER_GEOIP_PROXY`.
+- `SIFTER_GEOIP_DETECT_CDN`.
+- `SIFTER_DATA` — путь к `data/`.
+- `SIFTER_SOURCES` — список URL через запятую.
+
+## GeoIP
+
+Три источника данных, проверяются по порядку:
+
+1. **Кэш** (`data/geoip_cache.json`) — уже виденные IP. Постоянный, IP → страна не меняется.
+2. **mmdb** (оффлайн) — если установлен `maxminddb` и есть `.mmdb`.
+3. **HTTP** (ip-api.com/batch) — если ни кэша, ни mmdb нет.
+
+Обновление mmdb:
+
+```bash
+straysifter geoip-update
+```
+
+Пробует зеркала по порядку:
+
+- `P3TERX/GeoLite.mmdb` — обновляется ежедневно.
+- `Loyalsoldier/geoip` — Country.mmdb из releases.
+- `wp-statistics/GeoLite2-Country` — обновляется реже.
+- `db-ip.com` — с браузерным User-Agent, если зеркала недоступны.
+
+Свой источник:
+
+```bash
+straysifter geoip-update --from https://example.com/Country.mmdb
+```
+
+Очистка кэша:
+
+```bash
+straysifter geoip-clear
+```
+
+## Вывод
+
+`data/exports/checked.txt`:
+
+```
+# VPN keys — только живые по TCP (excluded: RU)
+# Обновлено: 2026-09-23 07:47:36
+# Всего: 493
+
+vless://...#🇩🇪 DE-001 [Reality] 45ms
+vless://...#🇳🇱 NL-001 [WS+TLS] 82ms
+trojan://...#🇸🇪 SE-001 [Trojan] 118ms
+```
+
+Формат строки: `<URI>#<флаг> <ISO>-<NNN> [<протокол>] <пинг>ms`.
+
+Отдельные файлы по схемам:
+
+- `data/exports/checked_vless.txt`
+- `data/exports/checked_trojan.txt`
+- `data/exports/checked_ss.txt`
+- `data/exports/checked_vmess.txt`
+- `data/exports/checked_socks.txt`
+- `data/exports/checked_http.txt`
+
+Экспорт одного источника через `export-source <pattern>` даёт два файла:
+
+- `data/exports/source_<name>_alive.txt` — только прошедшие TCP-чек.
+- `data/exports/source_<name>_all.txt` — все ключи источника.
+
+## Статистика источников
+
+```bash
+straysifter sources-stats
+```
+
+```
+status       found   uniq  contrib  alive   ratio  name
+ok           26228   9817     7612    463    4.7%  update.txt
+ok             106     21        0     15   71.4%  BLACK_VLESS_RUS.txt
+no alive       256    163        0      0    0.0%  selected.txt
+```
+
+| Колонка | Описание |
+|---|---|
+| `status` | `ok`, `low_yield`, `no_alive`, `empty`, `stale`, `dead`, `not_updating`, `never_ok` |
+| `found` | Всего URI в источнике |
+| `uniq` | Уникальных ключей |
+| `contrib` | Живых ключей, которых нет в других источниках |
+| `alive` | Прошло TCP-чек |
+| `ratio` | `alive / uniq` |
+
+Статусы:
+
+| Статус | Условие |
+|---|---|
+| `ok` | Живой, `ratio` ≥ 3% |
+| `low_yield` | Живой, `ratio` < 3% |
+| `no_alive` | 0 живых при `uniq > 0` |
+| `empty` | 0 ключей в тексте |
+| `stale` | Последний fetch > 48 часов назад |
+| `dead` | Последний fetch > 7 дней назад |
+| `not_updating` | Содержимое не менялось > 30 дней |
+| `never_ok` | Ни одного успешного fetch в истории |
+
+Флаг `-v2` добавляет времена и unsupported схемы. Флаг `--json` — вывод в JSON.
+
+## Управление базой
+
+```bash
+# показать состояние
+straysifter status
+
+# последние 20 прогонов
+straysifter history
+straysifter history --limit 50
+
+# очистить
+straysifter clean --working                    # рабочая база
+straysifter clean --history                    # история
+straysifter clean --sources                    # статистика источников
+straysifter clean --working --history --sources
+```
+
+## Файлы данных
+
+```
+data/
+├── raw/                              # снапшоты источников по дням
+├── exports/
+│   ├── checked.txt                   # живое, общий список
+│   └── checked_<scheme>.txt          # по схемам
+├── working.json                      # рабочая база
+├── history.json                      # история прогонов
+├── sources.json                      # статистика источников
+├── geoip_cache.json                  # IP → страна
+└── dbip-country-lite.mmdb            # GeoIP-база (опционально)
+```
+
+Ретеншен `data/raw/` — 7 дней. Остальное не чистится автоматически.
+
+## Архитектура
+
+```
+straysifter/
+├── core/
+│   ├── config.py      # dataclass-конфиг, env-override
+│   ├── paths.py       # find_home() — где живёт проект
+│   ├── fetcher.py     # SourceFetcher — единственное место, где есть прокси
+│   ├── archive.py     # снапшоты источников + ретеншен + fallback на кэш
+│   ├── parsers.py     # URI → ProxyInfo (все схемы + base64)
+│   ├── yaml_parser.py # Clash YAML → ProxyInfo
+│   ├── csv_parser.py  # CSV / plain host:port → ProxyInfo
+│   ├── country.py     # определение страны + флаги
+│   ├── geoip.py       # IP → страна (cache, mmdb, ip-api)
+│   ├── checks.py      # TCP через asyncio, TLS-опция
+│   ├── pipeline.py    # fetch → parse → check → GeoIP → save
+│   └── storage.py     # база, история, статистика, экспорт
+├── frontends/
+│   └── cli.py         # python -m straysifter
+└── service/
+    ├── runner.py      # фоновый цикл
+    ├── daemon_posix.py
+    └── daemon_windows.py
+```
+
+Прокси существует только в `core/fetcher.py`. Ни `checks.py`, ни `pipeline.py`, ни CLI, ни сервис о нём не знают — проверка никогда не пройдёт через прокси, даже если он задан.
+
+## Лицензия
+
+MIT. См. `LICENSE`.
