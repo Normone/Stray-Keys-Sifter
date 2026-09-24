@@ -10,8 +10,8 @@ echo   straysifter - control panel
 echo  =========================================
 echo.
 echo   -- Run --
-echo   1. Full cycle (fetch + check + export)
-echo   2. Fast cycle (no geoip)
+echo   1. Collect keys (fetch + check + export)
+echo   2. Inspect a source
 echo   3. Fetch sources only
 echo   4. Source stats
 echo   5. Export DB to checked.txt
@@ -21,7 +21,7 @@ echo   8. History
 echo   9. Clear DB / history / stats
 echo.
 echo   -- GeoIP --
-echo   G. Update DB-IP mmdb
+echo   G. Update mmdb
 echo   H. Clear geoip cache
 echo.
 echo   -- Config --
@@ -52,7 +52,7 @@ set /p "CH=Choice [0-9/A-R]: "
 if "!CH!"=="" goto MENU
 if "!CH!"=="0" exit /b
 if "!CH!"=="1" goto COLLECT
-if "!CH!"=="2" goto COLLECT_FAST
+if "!CH!"=="2" goto INSPECT
 if "!CH!"=="3" goto SOURCES
 if "!CH!"=="4" goto SOURCES_STATS
 if "!CH!"=="5" goto EXPORT
@@ -82,29 +82,30 @@ goto MENU
 
 :COLLECT
 cls
-echo  Full cycle: fetch + TCP + GeoIP + export. 3-7 minutes.
+echo  Collect keys: fetch + TCP + GeoIP + export. 3-7 minutes.
 echo.
-pause
 python -m straysifter -v collect
 echo.
 pause
 goto MENU
 
-:COLLECT_FAST
+:INSPECT
 cls
-echo  Fast cycle: без GeoIP. 2-5 minutes.
+echo  Inspect a source: parsed counts, schemes, endpoints.
+echo  Enter part of source URL (e.g. "update" or "whitelist"):
 echo.
-pause
-python -m straysifter -v collect --no-geoip
+set "PAT="
+set /p "PAT=Source: "
+if "!PAT!"=="" goto MENU
+python -m straysifter -v inspect "!PAT!"
 echo.
 pause
 goto MENU
 
 :SOURCES
 cls
-echo  Fetch sources into archive, без проверок.
+echo  Fetch sources into archive, without checks.
 echo.
-pause
 python -m straysifter -v sources
 echo.
 pause
@@ -172,7 +173,7 @@ goto MENU
 
 :GEOIP_UPDATE
 cls
-echo  Download DB-IP Lite mmdb for offline GeoIP.
+echo  Download mmdb for offline GeoIP (GitHub mirrors, then db-ip.com).
 echo.
 python -m straysifter geoip-update
 echo.

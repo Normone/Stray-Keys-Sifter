@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# straysifter — control panel для Linux/macOS.
+# straysifter — control panel for Linux/macOS.
 
 set -e
 cd "$(dirname "$0")"
@@ -10,7 +10,7 @@ if ! command -v "$PY" >/dev/null 2>&1; then
 fi
 
 pause() {
-    read -rp "Enter для продолжения..." _
+    read -rp "Press Enter to continue..." _
 }
 
 svc() {
@@ -20,12 +20,12 @@ svc() {
 open_path() {
     local p="$1"
     if [ ! -e "$p" ]; then
-        echo "не найдено: $p"
+        echo "not found: $p"
         pause
         return
     fi
     xdg-open "$p" 2>/dev/null || open "$p" 2>/dev/null || \
-        echo "откройте вручную: $(pwd)/$p"
+        echo "open manually: $(pwd)/$p"
 }
 
 menu() {
@@ -36,54 +36,59 @@ menu() {
    straysifter - control panel
   =========================================
 
-   -- Запуск --
-   1. Полный цикл (fetch + check + export)
-   2. Быстрый цикл (без geoip)
-   3. Только fetch источников
-   4. Статистика источников
-   5. Экспорт БД в checked.txt
-   6. Экспорт одного источника
-   7. Статус базы
-   8. История прогонов
-   9. Очистить базу / историю / статистику
+   -- Run --
+   1. Collect keys (fetch + check + export)
+   2. Inspect a source
+   3. Fetch sources only
+   4. Source stats
+   5. Export DB to checked.txt
+   6. Export one source
+   7. DB status
+   8. History
+   9. Clear DB / history / stats
 
    -- GeoIP --
-   G. Скачать DB-IP mmdb
-   H. Очистить geoip-кэш
+   G. Update mmdb
+   H. Clear geoip cache
 
-   -- Конфиг --
-   A. Показать config.json
-   E. Редактировать config.json
+   -- Config --
+   A. Show config.json
+   E. Edit config.json
 
-   -- Сервис в фоне --
-   I. Установить / переустановить
-   J. Запустить
-   K. Остановить
-   L. Перезапустить
-   M. Статус сервиса
-   N. Удалить сервис
+   -- Service --
+   I. Install / reinstall
+   J. Start
+   K. Stop
+   L. Restart
+   M. Service status
+   N. Uninstall service
 
-   -- Просмотр --
-   O. Лог в реальном времени (Ctrl+C - выход)
-   P. Открыть папку data
-   Q. Открыть exports
-   R. Открыть checked.txt
+   -- View --
+   O. Live log (Ctrl+C to exit)
+   P. Open data folder
+   Q. Open exports folder
+   R. Open checked.txt
 
-   0. Выход
+   0. Exit
 
   =========================================
 
 EOF
-    read -rp "Выбор [0-9/A-R]: " CH
+    read -rp "Choice [0-9/A-R]: " CH
     case "$CH" in
         0) exit 0 ;;
         1) clear; "$PY" -m straysifter -v collect; pause ;;
-        2) clear; "$PY" -m straysifter -v collect --no-geoip; pause ;;
+        2) clear
+           read -rp "Part of source URL (e.g. update): " PAT
+           if [ -n "$PAT" ]; then
+               "$PY" -m straysifter inspect "$PAT"
+           fi
+           pause ;;
         3) clear; "$PY" -m straysifter -v sources; pause ;;
         4) clear; "$PY" -m straysifter sources-stats; pause ;;
         5) clear; "$PY" -m straysifter export; pause ;;
         6) clear
-           read -rp "Часть URL источника (напр. update): " PAT
+           read -rp "Part of source URL (e.g. update): " PAT
            if [ -n "$PAT" ]; then
                "$PY" -m straysifter export-source "$PAT"
            fi
@@ -91,7 +96,7 @@ EOF
         7) clear; "$PY" -m straysifter status; pause ;;
         8) clear; "$PY" -m straysifter history; pause ;;
         9) clear
-           read -rp "Очистить [W]orking / [H]istory / [S]ource-stats / [B]oth / [N]othing: " X
+           read -rp "Clear [W]orking / [H]istory / [S]ource-stats / [B]oth / [N]othing: " X
            case "$X" in
                [Ww]) "$PY" -m straysifter clean --working ;;
                [Hh]) "$PY" -m straysifter clean --history ;;
@@ -101,17 +106,17 @@ EOF
            pause ;;
         [Gg]) clear; "$PY" -m straysifter geoip-update; pause ;;
         [Hh]) clear
-              read -rp "Очистить geoip-кэш? [Y/N]: " Y
+              read -rp "Clear geoip cache? [Y/N]: " Y
               if [ "${Y,,}" = "y" ]; then
                   "$PY" -m straysifter geoip-clear
               fi
               pause ;;
         [Aa]) clear
-              if [ -f config.json ]; then cat config.json; else echo "config.json не найден"; fi
+              if [ -f config.json ]; then cat config.json; else echo "config.json not found"; fi
               pause ;;
         [Ee]) clear
               if [ ! -f config.json ]; then
-                  echo "config.json не найден. Сначала пункт I."
+                  echo "config.json not found. Run option I first."
                   pause
               else
                   "${EDITOR:-nano}" config.json
@@ -123,17 +128,17 @@ EOF
         [Ll]) clear; svc restart; pause ;;
         [Mm]) clear; svc status; pause ;;
         [Nn]) clear
-              read -rp "Удалить сервис (stop + pid)? Данные и конфиг не тронутся. [Y/N]: " Y
+              read -rp "Uninstall service (stop + pid)? Data and config are NOT touched. [Y/N]: " Y
               if [ "${Y,,}" = "y" ]; then
                   svc uninstall
               fi
               pause ;;
         [Oo]) clear
               if [ ! -f straysifter.log ]; then
-                  echo "straysifter.log не найден. Запустите сервис (пункт J)."
+                  echo "straysifter.log not found. Start service (option J) first."
                   pause
               else
-                  echo "Смотрим straysifter.log. Ctrl+C - выход."
+                  echo "Watching straysifter.log. Ctrl+C to exit."
                   tail -f straysifter.log
                   pause
               fi ;;
@@ -143,10 +148,10 @@ EOF
                   "${EDITOR:-less}" data/exports/checked.txt
               else
                   clear
-                  echo "checked.txt не создан. Запустите цикл (пункт 1)."
+                  echo "checked.txt not created. Run a cycle (option 1)."
                   pause
               fi ;;
-        *) echo "Неизвестный выбор"; sleep 1 ;;
+        *) echo "Unknown choice"; sleep 1 ;;
     esac
     menu
 }
