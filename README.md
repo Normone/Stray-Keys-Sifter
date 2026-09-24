@@ -39,6 +39,7 @@ Hysteria/hysteria2 — UDP-протоколы (QUIC). В TCP-режиме про
 - Статистика источников: сколько найдено, сколько уникальных, сколько живых, сколько есть только здесь, когда последний раз менялось, сколько уникально-живых.
 - История прогонов.
 - Фоновый сервис: Windows — detached subprocess, Linux/macOS — двойной fork. Без systemd и SCM.
+- `config-set` / `config-show` — правка `config.json` из CLI без открытия файла.
 
 ## Установка
 
@@ -101,6 +102,8 @@ cat data/exports/hysteria2_candidates.txt     # только в TCP-режиме
 | `straysifter inspect <pattern>` | Разбор одного источника: что нашли, DNS, TCP-чек |
 | `straysifter export-source <pattern>` | Выгрузить один источник (`_alive.txt` + `_all.txt`) |
 | `straysifter export` | Пересобрать `checked.txt` из рабочей базы, без новых проверок |
+| `straysifter config-set <key> <value>` | Изменить поле в config.json (dotted path) |
+| `straysifter config-show <key>` | Показать одно поле из config.json |
 | `straysifter geoip-update` | Скачать mmdb для оффлайн-GeoIP |
 | `straysifter geoip-clear` | Очистить кэш `data/geoip_cache.json` |
 | `straysifter status` | Состояние базы, расписание, сводка по источникам |
@@ -150,7 +153,7 @@ PID — `straysifter.pid`.
 
 ## Меню управления
 
-`manage.cmd` (Windows) или `./manage.sh` (Linux/macOS) — текстовое меню для всех команд выше: циклы, конфиг, сервис, логи, папки. Пункты 1 и 2 — разные режимы проверки (TCP и sing-box).
+`manage.cmd` (Windows) или `./manage.sh` (Linux/macOS) — текстовое меню для всех команд выше. Пункты 1 и 2 — разные режимы проверки (TCP и sing-box). Сервисные команды и просмотр вынесены в подменю (S и V).
 
 ```bash
 chmod +x manage.sh
@@ -158,6 +161,36 @@ chmod +x manage.sh
 ```
 
 Меню не требует ввода команд — выбор пункта цифрой или буквой.
+
+## Смена режима сервиса
+
+Сервис читает `checks.mode` из `config.json` при старте. Чтобы поменять режим:
+
+```bash
+# через CLI
+straysifter config-set checks.mode singbox
+straysifter-service restart
+```
+
+Или через `manage.cmd` / `manage.sh` — пункт **S** (Service menu) → **7** (Set service mode). Там же предлагается сразу перезапустить сервис.
+
+Команда `config-set` работает с любым полем по dotted path:
+
+```bash
+straysifter config-set checks.mode tcp           # tcp / tcp+tls / singbox
+straysifter config-set checks.singbox_timeout 10
+straysifter config-set checks.tcp_workers 200
+straysifter config-set checks.exclude_countries RU,CN
+straysifter config-set fetcher.proxy socks5h://127.0.0.1:1080
+```
+
+Тип значения определяется по текущему значению поля: `200` станет `int`, `8.0` — `float`, `true` — `bool`, `RU,CN` — `list[str]`.
+
+Посмотреть текущее значение без правки:
+
+```bash
+straysifter config-show checks.mode
+```
 
 ## Конфиг
 
