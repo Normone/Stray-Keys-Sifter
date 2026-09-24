@@ -21,17 +21,25 @@
 
 Делал для себя, чтобы автоматом раз в N часов собирались ключи из различных источников и отсеивались абсолютно мёртвые на случай, если всё имеющееся переблочат, а я давно подписки не обновлял.
 
+### Hysteria2 — отдельно
+
+Hysteria/hysteria2 — UDP-протоколы (QUIC). Проверить их TCP-коннектом нельзя в принципе, а «пинг» через UDP-пакет бессмысленен: современный quic-go игнорирует VN-пакеты и отвечает только на полноценный handshake.
+
+Поэтому hysteria/hysteria2-ключи **не проверяются вообще**. Они складываются в отдельный файл `data/exports/hysteria2_candidates.txt` — просто список всего, что нашлось в источниках, с флагом страны, но без метки пинга. Страна при этом определяется по IP как обычно (CDN-детект не работает, если домен за Cloudflare — там будет XX и fallback на remark).
+
+Если в источниках hysteria/hysteria2 нет — файл не создаётся.
+
 ## Возможности
 
 - Загрузка источников по списку URL. Список задаётся в `config.json → sources`, правится без изменения кода.
-- Парсинг всех популярных форматов в одном источнике: `vless://`, `vmess://`, `trojan://`, `ss://`, `socks5://`, `http(s)://`, `tg://proxy?...`, base64-подписки, Clash YAML, CSV с заголовком и без, plain `host:port`.
-- Дедупликация по `uuid@host:port` (или `host:port` для схем без идентификатора).
-- TCP-connect всех схем с мульти-IP резолвом (все A/AAAA-записи), 3 попытки с растущим таймаутом (3→6→9 с) и опциональным TLS-handshake (`mode: "tcp+tls"`).
-- GeoIP по IP сервера: оффлайн-mmdb, HTTP-fallback через ip-api.com, постоянный кэш `IP → страна`. CDN-фронты (Cloudflare, Fastly, Akamai и др.) не считаются за страну origin — для них берётся страна из remark ключа.
+- Парсинг всех популярных форматов в одном источнике: `vless://`, `vmess://`, `trojan://`, `ss://`, `socks5://`, `http(s)://`, `mtproto://`, `hysteria://`, `hysteria2://`, `hy2://`, `tg://proxy?...`, base64-подписки (в т.ч. с мусором и BOM), Clash YAML, CSV с заголовком и без, plain `host:port`.
+- Дедупликация по `<scheme>://<ident>@<host>:<port>` (ident = uuid / password / method; для схем без идентификатора — просто `host:port`).
+- TCP-connect всех stream-схем с мульти-IP резолвом (все A/AAAA-записи), 3 попытки с растущим таймаутом (3→6→9 с), опциональным TLS-handshake (`mode: "tcp+tls"`) и последовательным обходом для хостов с ≤3 IP.
+- GeoIP по IP сервера: оффлайн-mmdb, HTTP-fallback через ip-api.com, постоянный кэш `IP → страна`. CDN-фронты (Cloudflare, Fastly, Akamai, AWS, GCP, Azure — по CIDR и по ASN) не считаются за страну origin — для них страна берётся из remark.
 - Фильтр по странам: `checks.exclude_countries: ["RU"]` — ключи из этих стран не попадут в экспорт.
 - Sanitize URI для клиентов на sing-box: удаление `?ed=N` из WebSocket path, замена `type=raw` → `type=tcp`.
-- Экспорт: общий `checked.txt` + отдельный файл на каждую схему.
-- Статистика источников: сколько найдено, сколько уникальных, сколько живых, сколько есть только здесь, когда последний раз менялось.
+- Экспорт: общий `checked.txt` + отдельный файл на каждую схему + `hysteria2_candidates.txt` без проверки.
+- Статистика источников: сколько найдено, сколько уникальных, сколько живых, сколько есть только здесь, когда последний раз менялось, сколько уникально-живых.
 - История прогонов.
 - Фоновый сервис: Windows — detached subprocess, Linux/macOS — двойной fork. Без systemd и SCM.
 
@@ -52,7 +60,7 @@ pip install -e ".[geoip]"
 straysifter geoip-update
 ```
 
-Без mmdb работает HTTP-lookup через ip-api.com (100 IP за запрос, 15 запросов/мин).
+Без mmdb работает HTTP-lookup через ip-api.com (100 IP за запрос, 15 запросов/мин бесплатно).
 
 ## Быстрый старт
 
@@ -66,6 +74,7 @@ straysifter collect
 
 # результат
 cat data/exports/checked.txt
+cat data/exports/hysteria2_candidates.txt
 ```
 
 ## Команды
@@ -93,10 +102,11 @@ cat data/exports/checked.txt
 | `--exclude-country RU,CN` | `collect`, `export`, `export-source` | Исключить страны из экспорта (дополняет `config.json`) |
 | `--no-geoip` | `collect`, `export`, `export-source` | Не использовать GeoIP в этом вызове |
 | `--json` | `sources-stats` | Вывод в JSON |
-| `--limit N` | `inspect` | Сколько примеров показать |
+| `--limit N` | `inspect` (по умолч. 10), `history` (по умолч. 20) | Сколько записей показать |
 | `--check` | `inspect` | TCP-чек endpoints |
 | `--resolve` | `inspect` | Показать DNS-резолв |
-| `--from URL` | `geoip-update` | Скачать mmdb из своего источника |
+| `--check-timeout N` | `inspect` | Таймаут TCP-чека для inspect (по умолч. 4.0) |
+| `--from URL` | `geoip-update` | Скачать mmdb из своего источника (без зеркал и fallback) |
 | `--working` / `--history` / `--sources` | `clean` | Что именно очистить |
 
 ## Управление сервисом
@@ -110,11 +120,12 @@ straysifter-service stop
 straysifter-service restart
 straysifter-service status
 straysifter-service uninstall     # остановить и удалить PID-файл
+straysifter-service debug         # раннер в консоли (Ctrl+C — выход)
 ```
 
 Реализация по платформам:
 
-- **Windows** — detached subprocess. Проверка живости через `OpenProcess`/`GetExitCodeProcess`. Остановка `taskkill` → 30 секунд на graceful shutdown → `taskkill /F`.
+- **Windows** — detached subprocess (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`). Проверка живости через `OpenProcess`/`GetExitCodeProcess` (`STILL_ACTIVE=259`). Остановка `taskkill` → 30 секунд на graceful shutdown → `taskkill /F`.
 - **Linux/macOS** — двойной fork (`os.fork` × 2 + `setsid`). Проверка живости через `os.kill(pid, 0)`. Остановка `SIGTERM` → 30 секунд → `SIGKILL`.
 
 Логи — `straysifter.log` в корне проекта, ротация 5 MB × 5.
@@ -171,7 +182,6 @@ chmod +x manage.sh
     "https://example.com/sub.txt"
   ],
   "schedule": {
-    "fetch_hours": 6.0,
     "check_minutes": 360.0
   },
   "storage": {
@@ -194,18 +204,18 @@ chmod +x manage.sh
 
 | Поле | Тип | Описание |
 |---|---|---|
-| `mode` | str | `tcp` — только TCP-connect. `tcp+tls` — дополнительно TLS-handshake. |
-| `tcp_timeout` | float | Таймаут первой попытки, секунды. |
-| `tcp_timeout_step` | float | Прирост таймаута на каждой следующей попытке. |
-| `tcp_timeout_max` | float | Потолок таймаута. |
-| `tcp_workers` | int | Параллельных TCP-проверок. 120 безопасно для Windows. |
-| `tcp_attempts` | int | Попыток на endpoint. |
-| `tcp_retry_jitter` | float | Случайная пауза перед повтором, до N секунд. |
-| `tcp_sequential_max_ips` | int | Для хостов с числом IP ≤ N включить последовательный обход. |
-| `tcp_sequential_after` | int | С какой попытки переходить на последовательный обход. |
-| `tcp_endpoint_budget` | float | Жёсткий бюджет на один endpoint, секунды. `0` — без ограничения. |
-| `tls_timeout` | float | Таймаут TLS-handshake. |
-| `tls_workers` | int | Параллельных TLS-handshake. |
+| `mode` | str | `tcp` — только TCP-connect. `tcp+tls` — дополнительно TLS-handshake (теряет 5-15% живых, но список чище). |
+| `tcp_timeout` | float | Таймаут первой попытки, секунды. Дефолт 3.0. **Уменьшать не стоит** — публичные сервера часто отвечают на 2-3 секунде. |
+| `tcp_timeout_step` | float | Прирост таймаута на каждой следующей попытке. Дефолт 3.0. |
+| `tcp_timeout_max` | float | Потолок таймаута. Дефолт 9.0. |
+| `tcp_workers` | int | Параллельных TCP-проверок. Дефолт 120 (безопасно для Windows). |
+| `tcp_attempts` | int | Попыток на endpoint. Дефолт 3. RST-ответы не ретраятся независимо от этого числа. |
+| `tcp_retry_jitter` | float | Случайная пауза перед повтором, до N секунд. Дефолт 0.4. **Меньше 0.3 — потеря 20-25% живых** (проверено A/B). |
+| `tcp_sequential_max_ips` | int | Для хостов с числом IP ≤ N — последовательный обход. Дефолт 3. |
+| `tcp_sequential_after` | int | С какой попытки переходить на последовательный обход. Дефолт 2. |
+| `tcp_endpoint_budget` | float | Жёсткий бюджет на один endpoint, секунды. `0` — без ограничения. Дефолт 30.0. |
+| `tls_timeout` | float | Таймаут TLS-handshake. Дефолт 4.0. |
+| `tls_workers` | int | Параллельных TLS-handshake. Дефолт 30. |
 | `exclude_countries` | list[str] | ISO-коды стран, которые не попадут в экспорт. Пусто — экспортировать все. |
 
 ### geoip
@@ -236,8 +246,7 @@ chmod +x manage.sh
 
 | Поле | Тип | Описание |
 |---|---|---|
-| `fetch_hours` | float | Как часто обновлять источники (через прокси, если задан). |
-| `check_minutes` | float | Как часто прогонять проверки (напрямую). |
+| `check_minutes` | float | Как часто прогонять полный цикл (fetch + check + export). |
 
 ### storage
 
@@ -250,22 +259,27 @@ chmod +x manage.sh
 Перекрывают config:
 
 - `SIFTER_PROXY` — прокси для fetch.
-- `SIFTER_FETCH_PREFER` — `direct` / `proxy` / ...
+- `SIFTER_FETCH_PREFER` — `direct` / `proxy` / `direct-only` / `proxy-only`.
 - `SIFTER_MODE` — `tcp` / `tcp+tls`.
 - `SIFTER_EXCLUDE_COUNTRIES` — `RU,CN`.
-- `SIFTER_GEOIP` — `1` / `0`.
+- `SIFTER_GEOIP` — `1` / `0` / `true` / `false`.
 - `SIFTER_GEOIP_PROXY`.
 - `SIFTER_GEOIP_DETECT_CDN`.
 - `SIFTER_DATA` — путь к `data/`.
 - `SIFTER_SOURCES` — список URL через запятую.
+- `straysifter_HOME` — корень проекта (регистр как есть). Используется в `paths.find_home()`.
 
 ## GeoIP
 
 Три источника данных, проверяются по порядку:
 
-1. **Кэш** (`data/geoip_cache.json`) — уже виденные IP. Постоянный, IP → страна не меняется.
+1. **Кэш** (`data/geoip_cache.json`) — уже виденные IP. Постоянный: IP → страна не меняется.
 2. **mmdb** (оффлайн) — если установлен `maxminddb` и есть `.mmdb`.
 3. **HTTP** (ip-api.com/batch) — если ни кэша, ни mmdb нет.
+
+HTTP-лукап идёт только если накопилось ≥3 незнакомых IP. Для 1-2 IP не окупается: rate-limit у ip-api всё равно даст 1-2 секунды задержки, а одиночных доменов за прогон может набраться много.
+
+CDN-детект работает по двум каналам: список CIDR Cloudflare/Fastly (захардкожен) + ASN Cloudflare/Fastly/Akamai/AWS/Google/Microsoft из ответа ip-api. Если сработал — страна не ставится, и `parse_country` откатывается на remark ключа.
 
 Обновление mmdb:
 
@@ -273,18 +287,20 @@ chmod +x manage.sh
 straysifter geoip-update
 ```
 
-Пробует зеркала по порядку:
+Пробует по порядку:
 
-- `P3TERX/GeoLite.mmdb` — обновляется ежедневно.
-- `Loyalsoldier/geoip` — Country.mmdb из releases.
-- `wp-statistics/GeoLite2-Country` — обновляется реже.
-- `db-ip.com` — с браузерным User-Agent, если зеркала недоступны.
+- `github.com/P3TERX/GeoLite.mmdb` — обновляется ежедневно.
+- `github.com/Loyalsoldier/geoip` — Country.mmdb из releases.
+- `github.com/wp-statistics/GeoLite2-Country` — обновляется реже.
+- `download.db-ip.com` — три последних месяца по кругу, `.mmdb.gz` распаковывается на лету; с браузерным User-Agent, иначе отдаёт 403.
 
 Свой источник:
 
 ```bash
 straysifter geoip-update --from https://example.com/Country.mmdb
 ```
+
+Если передан `--from`, зеркала и db-ip fallback не используются — качается ровно этот URL.
 
 Очистка кэша:
 
@@ -308,7 +324,7 @@ trojan://...#🇸🇪 SE-001 [Trojan] 118ms
 
 Формат строки: `<URI>#<флаг> <ISO>-<NNN> [<протокол>] <пинг>ms`.
 
-Отдельные файлы по схемам:
+Отдельные файлы по схемам (создаются, только если такие ключи есть в базе):
 
 - `data/exports/checked_vless.txt`
 - `data/exports/checked_trojan.txt`
@@ -317,10 +333,27 @@ trojan://...#🇸🇪 SE-001 [Trojan] 118ms
 - `data/exports/checked_socks.txt`
 - `data/exports/checked_http.txt`
 
+`data/exports/hysteria2_candidates.txt` — hysteria/hysteria2-ключи **без проверки живости**:
+
+```
+# Hysteria / Hysteria2 candidates — БЕЗ проверки живости
+# Обновлено: 2026-09-23 07:47:36
+# Всего: 37
+#
+# UDP-протоколы: TCP-connect к ним провалится; полноценная
+# проверка требует sing-box. Импортируй файл в клиент и прогони
+# тест задержки сам.
+
+hysteria2://...#🇩🇪 DE-001 [Hysteria2] unverified
+hysteria2://...#🇳🇱 NL-002 [Hysteria2] unverified
+```
+
+Формат строки: `<URI>#<флаг> <ISO>-<NNN> [<протокол>] unverified`.
+
 Экспорт одного источника через `export-source <pattern>` даёт два файла:
 
 - `data/exports/source_<name>_alive.txt` — только прошедшие TCP-чек.
-- `data/exports/source_<name>_all.txt` — все ключи источника.
+- `data/exports/source_<name>_all.txt` — все ключи источника (без hysteria2).
 
 ## Статистика источников
 
@@ -338,26 +371,26 @@ no alive       256    163        0      0    0.0%  selected.txt
 | Колонка | Описание |
 |---|---|
 | `status` | `ok`, `low_yield`, `no_alive`, `empty`, `stale`, `dead`, `not_updating`, `never_ok` |
-| `found` | Всего URI в источнике |
-| `uniq` | Уникальных ключей |
-| `contrib` | Живых ключей, которых нет в других источниках |
+| `found` | Всего URI в источнике (`raw_uris`) |
+| `uniq` | Уникальных ключей в этом источнике |
+| `contrib` | Живых ключей, которых нет ни в одном другом источнике (`unique_alive`) |
 | `alive` | Прошло TCP-чек |
 | `ratio` | `alive / uniq` |
 
-Статусы:
+Статусы (порядок — как в сортировке вывода):
 
 | Статус | Условие |
 |---|---|
-| `ok` | Живой, `ratio` ≥ 3% |
-| `low_yield` | Живой, `ratio` < 3% |
-| `no_alive` | 0 живых при `uniq > 0` |
-| `empty` | 0 ключей в тексте |
-| `stale` | Последний fetch > 48 часов назад |
-| `dead` | Последний fetch > 7 дней назад |
-| `not_updating` | Содержимое не менялось > 30 дней |
+| `dead` | Последний успешный fetch > 7 дней назад |
 | `never_ok` | Ни одного успешного fetch в истории |
+| `empty` | 0 ключей в тексте |
+| `no_alive` | 0 живых при `uniq > 0` |
+| `not_updating` | Содержимое не менялось > 30 дней |
+| `stale` | Последний fetch > 48 часов назад |
+| `low_yield` | Живой, `ratio` < 3% |
+| `ok` | Живой, `ratio` ≥ 3% |
 
-Флаг `-v2` добавляет времена и unsupported схемы. Флаг `--json` — вывод в JSON.
+Флаг `-v2` (в коде = `--verbose`) добавляет времена проблемных источников и unsupported схемы. Флаг `--json` — вывод в JSON.
 
 ## Управление базой
 
@@ -383,9 +416,10 @@ data/
 ├── raw/                              # снапшоты источников по дням
 ├── exports/
 │   ├── checked.txt                   # живое, общий список
-│   └── checked_<scheme>.txt          # по схемам
-├── working.json                      # рабочая база
-├── history.json                      # история прогонов
+│   ├── checked_<scheme>.txt          # по схемам (если есть)
+│   └── hysteria2_candidates.txt      # hysteria/hysteria2, БЕЗ проверки
+├── working.json                      # рабочая база (лимит 20 000 записей)
+├── history.json                      # история прогонов (лимит 500 записей)
 ├── sources.json                      # статистика источников
 ├── geoip_cache.json                  # IP → страна
 └── dbip-country-lite.mmdb            # GeoIP-база (опционально)

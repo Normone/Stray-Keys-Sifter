@@ -4,15 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "straysifter"
-version = "2.0.0"
-description = "Сборщик публичных VPN-ключей (vless, vmess, trojan, ss, socks, http) с TCP/TLS-отсевом и GeoIP"
+version = "2.1.0"
+description = "Сборщик публичных VPN-ключей (vless, vmess, trojan, ss, socks, http, mtproto, hysteria2) с TCP/TLS-отсевом и GeoIP"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "bot & stupid" }]
 keywords = [
     "vpn", "vless", "vmess", "trojan", "shadowsocks",
-    "proxy", "collector", "geoip",
+    "hysteria2", "mtproto", "socks5", "proxy", "collector",
+    "geoip", "reality", "xray", "sing-box",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -39,9 +40,9 @@ geoip = ["maxminddb>=1.6"]
 dev = ["ruff>=0.1", "pytest>=7"]
 
 [project.urls]
-Homepage = "https://github.com/Normone/straysifter"
-Source = "https://github.com/Normone/straysifter"
-Issues = "https://github.com/Normone/straysifter/issues"
+Homepage = "https://github.com/Normone/Stray-Keys-Sifter"
+Source = "https://github.com/Normone/Stray-Keys-Sifter"
+Issues = "https://github.com/Normone/Stray-Keys-Sifter/issues"
 
 [project.scripts]
 straysifter         = "straysifter.frontends.cli:main"

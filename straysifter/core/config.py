@@ -100,7 +100,7 @@ class GeoIPConfig:
 
 @dataclass
 class ScheduleConfig:
-    fetch_hours: float = 6.0
+    # Период полного цикла (fetch + check + save + export), минуты.
     check_minutes: float = 360.0
 
 

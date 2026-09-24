@@ -20,7 +20,6 @@ class Runner:
         self.stop_event = threading.Event()
         self.storage = Storage(self.cfg.storage.base)
 
-        self._next_fetch = 0.0
         self._next_check = 0.0
 
     def cycle_checks(self) -> None:
@@ -51,17 +50,10 @@ class Runner:
         if total and (done % 500 == 0 or done == total):
             log.info("  %s: %d/%d ok=%d", stage, done, total, alive)
 
-    def _schedule_next(self) -> None:
-        now = time.monotonic()
-        if self._next_fetch == 0.0:
-            self._next_fetch = now
-        if self._next_check == 0.0:
-            self._next_check = now
-
     def run_forever(self) -> None:
         log.info("runner: start (check every %.1fmin, mode=%s)",
                  self.cfg.schedule.check_minutes, self.cfg.checks.mode)
-        self._schedule_next()
+        self._next_check = time.monotonic()
 
         while not self.stop_event.is_set():
             now = time.monotonic()

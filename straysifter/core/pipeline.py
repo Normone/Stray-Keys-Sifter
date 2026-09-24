@@ -260,7 +260,13 @@ def run_cycle(
         log.info("pipeline: hysteria candidates=%d (см. hysteria2_candidates.txt)",
                  len(hysteria_candidates))
 
-    apply_geoip([r.info for r in checked], cfg, cfg.storage.base)
+    # GeoIP — и для живых stream-ключей, и для hysteria-кандидатов.
+    # Иначе в hysteria2_candidates.txt страна берётся только из remark,
+    # и при пустом remark будет XX, хотя в README обещано «страна по IP».
+    apply_geoip(
+        [r.info for r in checked] + hysteria_candidates,
+        cfg, cfg.storage.base,
+    )
 
     finished = datetime.now()
     result = RunResult(
