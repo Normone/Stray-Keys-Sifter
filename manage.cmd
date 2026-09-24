@@ -10,15 +10,16 @@ echo   straysifter - control panel
 echo  =========================================
 echo.
 echo   -- Run --
-echo   1. Collect keys (fetch + check + export)
-echo   2. Inspect a source
-echo   3. Fetch sources only
-echo   4. Source stats
-echo   5. Export DB to checked.txt
-echo   6. Export one source
-echo   7. DB status
-echo   8. History
-echo   9. Clear DB / history / stats
+echo   1. Collect keys (fetch + TCP check + export)
+echo   2. Collect keys (fetch + sing-box check + export)
+echo   3. Inspect a source
+echo   4. Fetch sources only
+echo   5. Source stats
+echo   6. Export DB to checked.txt
+echo   7. Export one source
+echo   8. DB status
+echo   9. History
+echo   C. Clear DB / history / stats
 echo.
 echo   -- GeoIP --
 echo   G. Update mmdb
@@ -51,15 +52,16 @@ set /p "CH=Choice [0-9/A-R]: "
 
 if "!CH!"=="" goto MENU
 if "!CH!"=="0" exit /b
-if "!CH!"=="1" goto COLLECT
-if "!CH!"=="2" goto INSPECT
-if "!CH!"=="3" goto SOURCES
-if "!CH!"=="4" goto SOURCES_STATS
-if "!CH!"=="5" goto EXPORT
-if "!CH!"=="6" goto EXPORT_SOURCE
-if "!CH!"=="7" goto STATUS
-if "!CH!"=="8" goto HISTORY
-if "!CH!"=="9" goto CLEAN
+if "!CH!"=="1" goto COLLECT_TCP
+if "!CH!"=="2" goto COLLECT_SINGBOX
+if "!CH!"=="3" goto INSPECT
+if "!CH!"=="4" goto SOURCES
+if "!CH!"=="5" goto SOURCES_STATS
+if "!CH!"=="6" goto EXPORT
+if "!CH!"=="7" goto EXPORT_SOURCE
+if "!CH!"=="8" goto STATUS
+if "!CH!"=="9" goto HISTORY
+if /i "!CH!"=="C" goto CLEAN
 if /i "!CH!"=="G" goto GEOIP_UPDATE
 if /i "!CH!"=="H" goto GEOIP_CLEAR
 if /i "!CH!"=="A" goto SHOW_CONFIG
@@ -80,11 +82,22 @@ timeout /t 1 > nul
 goto MENU
 
 
-:COLLECT
+:COLLECT_TCP
 cls
-echo  Collect keys: fetch + TCP + GeoIP + export. 3-7 minutes.
+echo  Collect keys via TCP: fetch + TCP check + GeoIP + export.
+echo  Fast, wide list. 3-7 minutes.
 echo.
 python -m straysifter -v collect
+echo.
+pause
+goto MENU
+
+:COLLECT_SINGBOX
+cls
+echo  Collect keys via sing-box: fetch + real HTTP check + GeoIP + export.
+echo  Slow, narrow list. Hours. Requires bin/sing-box/sing-box.exe.
+echo.
+python -m straysifter -v collect --mode singbox
 echo.
 pause
 goto MENU
@@ -312,7 +325,7 @@ if exist data\exports\checked.txt (
 )
 cls
 echo  checked.txt not created yet.
-echo  Run a cycle (option 1) or export (option 5).
+echo  Run a cycle (option 1) or export (option 6).
 echo.
 pause
 goto MENU

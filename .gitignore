@@ -17,6 +17,7 @@ straysifter.log
 straysifter.log.*
 straysifter.pid
 data/
+bin/
 
 # IDE
 .vscode/
