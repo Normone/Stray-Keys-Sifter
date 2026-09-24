@@ -500,10 +500,24 @@ def _try_start(binary: Path, outbounds: list[dict]):
     err_fh.close()
 
     err_f = open(err_path, "w", encoding="utf-8")
+
+    creationflags = 0
+    if sys.platform.startswith("win"):
+        # DETACHED_PROCESS — не наследовать консоль родителя;
+        # CREATE_NO_WINDOW — не создавать новую. Поодиночке в
+        # контексте detached-родителя могут не сработать и появляется
+        # пустое окно sing-box.exe.
+        creationflags = (
+            subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NO_WINDOW
+        )
+
     proc = subprocess.Popen(
         [str(binary), "run", "-c", cfg_path],
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=err_f,
+        creationflags=creationflags,
     )
     err_f.close()
 
