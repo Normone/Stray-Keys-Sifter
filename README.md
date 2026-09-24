@@ -430,26 +430,42 @@ data/
 ## Архитектура
 
 ```
-straysifter/
-├── core/
-│   ├── config.py      # dataclass-конфиг, env-override
-│   ├── paths.py       # find_home() — где живёт проект
-│   ├── fetcher.py     # SourceFetcher — единственное место, где есть прокси
-│   ├── archive.py     # снапшоты источников + ретеншен + fallback на кэш
-│   ├── parsers.py     # URI → ProxyInfo (все схемы + base64)
-│   ├── yaml_parser.py # Clash YAML → ProxyInfo
-│   ├── csv_parser.py  # CSV / plain host:port → ProxyInfo
-│   ├── country.py     # определение страны + флаги
-│   ├── geoip.py       # IP → страна (cache, mmdb, ip-api)
-│   ├── checks.py      # TCP через asyncio, TLS-опция
-│   ├── pipeline.py    # fetch → parse → check → GeoIP → save
-│   └── storage.py     # база, история, статистика, экспорт
-├── frontends/
-│   └── cli.py         # python -m straysifter
-└── service/
-    ├── runner.py      # фоновый цикл
-    ├── daemon_posix.py
-    └── daemon_windows.py
+Stray-Keys-Sifter/                    # корень (git, config.json, data/, логи)
+├── straysifter/                      # python-пакет
+│   ├── __init__.py                   # __version__, глушит urllib3
+│   ├── __main__.py                   # python -m straysifter
+│   ├── core/
+│   │   ├── __init__.py               # реэкспорт Config, load_config, SourceFetcher
+│   │   ├── config.py                 # dataclass-конфиг, env-override
+│   │   ├── paths.py                  # find_home() — где живёт проект
+│   │   ├── fetcher.py                # SourceFetcher — единственное место, где есть прокси
+│   │   ├── archive.py                # снапшоты источников + ретеншен + fallback на кэш
+│   │   ├── parsers.py                # URI → ProxyInfo (все схемы + base64)
+│   │   ├── yaml_parser.py            # Clash YAML → ProxyInfo
+│   │   ├── csv_parser.py             # CSV / plain host:port → ProxyInfo
+│   │   ├── country.py                # определение страны + флаги
+│   │   ├── geoip.py                  # IP → страна (cache, mmdb, ip-api)
+│   │   ├── checks.py                 # TCP через asyncio, TLS-опция
+│   │   ├── pipeline.py               # fetch → parse → check → GeoIP → save
+│   │   └── storage.py                # база, история, статистика, экспорт
+│   ├── frontends/
+│   │   ├── __init__.py
+│   │   └── cli.py                    # python -m straysifter <команда>
+│   └── service/
+│       ├── __init__.py
+│       ├── __main__.py               # straysifter-service <install|start|stop|...>
+│       ├── runner.py                 # фоновый цикл
+│       ├── daemon_posix.py           # двойной fork
+│       └── daemon_windows.py         # detached subprocess
+├── pyproject.toml
+├── README.md
+├── LICENSE
+├── manage.cmd / manage.sh            # текстовое меню
+├── smoke_test.py                     # оффлайн + сетевые smoke-тесты
+├── config.json                       # создаётся при install, в .gitignore
+├── straysifter.log                   # ротация 5 MB × 5, в .gitignore
+├── straysifter.pid                   # в .gitignore
+└── data/                             # создаётся при первом collect, в .gitignore
 ```
 
 Прокси существует только в `core/fetcher.py`. Ни `checks.py`, ни `pipeline.py`, ни CLI, ни сервис о нём не знают — проверка никогда не пройдёт через прокси, даже если он задан.
