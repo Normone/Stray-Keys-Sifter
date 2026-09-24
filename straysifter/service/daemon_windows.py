@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import logging.handlers
 import os
 import signal
 import subprocess
@@ -143,24 +144,11 @@ def stop() -> int:
 
     print(f"Останавливаю PID {pid}...")
     subprocess.run(
-        ["taskkill", "/PID", str(pid)],
-        capture_output=True, text=True, check=False,
-    )
-
-    for _ in range(300):
-        time.sleep(0.1)
-        if not _pid_alive(pid):
-            _remove_pidfile()
-            print("Остановлен.")
-            return 0
-
-    print("Не завершился за 30с, /F...")
-    subprocess.run(
         ["taskkill", "/PID", str(pid), "/F"],
         capture_output=True, text=True, check=False,
     )
     _remove_pidfile()
-    print("Убит.")
+    print("Остановлен.")
     return 0
 
 
@@ -191,8 +179,6 @@ def status() -> int:
 
 def run_runner_detached() -> int:
     """Выполняется внутри detached-процесса."""
-    import logging.handlers
-
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     for h in list(root.handlers):
