@@ -133,12 +133,13 @@ def cmd_collect(args) -> int:
     )
     print(f"Экспорт: {p}")
 
-    hp = st.export_hysteria_candidates(
-        res.hysteria_candidates, parse_country, country_flag,
-    )
-    if hp:
-        print(f"Экспорт (hysteria, без проверки): {hp}  "
-              f"({len(res.hysteria_candidates)})")
+    if res.hysteria_candidates:
+        hp = st.export_hysteria_candidates(
+            res.hysteria_candidates, parse_country, country_flag,
+        )
+        if hp:
+            print(f"Экспорт (hysteria, без проверки): {hp}  "
+                  f"({len(res.hysteria_candidates)})")
     return 0
 
 
@@ -243,12 +244,18 @@ def cmd_export_source(args) -> int:
 
     mode = args.mode or cfg.checks.mode
     cfg.checks.mode = mode
+    use_singbox = mode == "singbox"
     print(f"check  : mode={mode}")
 
-    results = run_check(infos, cfg.checks, on_progress=_progress)
-    print(f"\nTCP alive: {len(results)} / {len(infos)}")
-
-    hysteria_infos = [i for i in infos if i.scheme in UDP_SCHEMES]
+    if use_singbox:
+        from ..core.singbox import run_singbox_check
+        results = run_singbox_check(infos, cfg.checks, on_progress=_progress)
+        print(f"\nsingbox alive: {len(results)} / {len(infos)}")
+        hysteria_infos: list = []
+    else:
+        results = run_check(infos, cfg.checks, on_progress=_progress)
+        print(f"\nTCP alive: {len(results)} / {len(infos)}")
+        hysteria_infos = [i for i in infos if i.scheme in UDP_SCHEMES]
 
     if cfg.geoip.enabled:
         apply_geoip([r.info for r in results], cfg, cfg.storage.base)
@@ -730,14 +737,17 @@ def cmd_history(args) -> int:
         return 0
 
     limit = args.limit or 20
-    print(f"{'когда':<18} {'alive':>7} {'total':>7} {'dur':>6}  by scheme")
+    print(f"{'когда':<18} {'mode':<8} {'alive':>7} {'total':>7} "
+          f"{'dur':>6}  by scheme")
     for h in hist[-limit:]:
         alive = h.get("alive", 0)
         total = h.get("total", 0)
         dur = h.get("duration_s", 0)
+        mode = h.get("mode", "-")
         schemes = h.get("alive_by_scheme", {})
         sch = " ".join(f"{k}={v}" for k, v in sorted(schemes.items()))
-        print(f"{h.get('ts',''):<18} {alive:>7} {total:>7} {dur:>5.1f}s  {sch}")
+        print(f"{h.get('ts',''):<18} {mode:<8} {alive:>7} {total:>7} "
+              f"{dur:>5.1f}s  {sch}")
     return 0
 
 
@@ -776,6 +786,14 @@ def _add_no_geoip_flag(sp: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_mode_flag(sp: argparse.ArgumentParser) -> None:
+    sp.add_argument(
+        "--mode", choices=["tcp", "tcp+tls", "singbox"], default=None,
+        help="метод проверки: tcp (быстро, широко), tcp+tls (чище), "
+             "singbox (реальный HTTP через туннель, медленно)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="straysifter",
@@ -785,7 +803,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("collect", help="fetch → parse → check → save → export")
-    sp.add_argument("--mode", choices=["tcp", "tcp+tls"], default=None)
+    _add_mode_flag(sp)
     _add_exclude_flag(sp)
     _add_no_geoip_flag(sp)
     sp.set_defaults(func=cmd_collect)
@@ -810,7 +828,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("export-source",
                         help="выгрузить один источник (alive + all)")
     sp.add_argument("pattern")
-    sp.add_argument("--mode", choices=["tcp", "tcp+tls"], default=None)
+    _add_mode_flag(sp)
     _add_exclude_flag(sp)
     _add_no_geoip_flag(sp)
     sp.set_defaults(func=cmd_export_source)

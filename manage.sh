@@ -37,15 +37,16 @@ menu() {
   =========================================
 
    -- Run --
-   1. Collect keys (fetch + check + export)
-   2. Inspect a source
-   3. Fetch sources only
-   4. Source stats
-   5. Export DB to checked.txt
-   6. Export one source
-   7. DB status
-   8. History
-   9. Clear DB / history / stats
+   1. Collect keys (fetch + TCP check + export)
+   2. Collect keys (fetch + sing-box check + export)
+   3. Inspect a source
+   4. Fetch sources only
+   5. Source stats
+   6. Export DB to checked.txt
+   7. Export one source
+   8. DB status
+   9. History
+   C. Clear DB / history / stats
 
    -- GeoIP --
    G. Update mmdb
@@ -78,24 +79,25 @@ EOF
     case "$CH" in
         0) exit 0 ;;
         1) clear; "$PY" -m straysifter -v collect; pause ;;
-        2) clear
+        2) clear; "$PY" -m straysifter -v collect --mode singbox; pause ;;
+        3) clear
            read -rp "Part of source URL (e.g. update): " PAT
            if [ -n "$PAT" ]; then
                "$PY" -m straysifter inspect "$PAT"
            fi
            pause ;;
-        3) clear; "$PY" -m straysifter -v sources; pause ;;
-        4) clear; "$PY" -m straysifter sources-stats; pause ;;
-        5) clear; "$PY" -m straysifter export; pause ;;
-        6) clear
+        4) clear; "$PY" -m straysifter -v sources; pause ;;
+        5) clear; "$PY" -m straysifter sources-stats; pause ;;
+        6) clear; "$PY" -m straysifter export; pause ;;
+        7) clear
            read -rp "Part of source URL (e.g. update): " PAT
            if [ -n "$PAT" ]; then
                "$PY" -m straysifter export-source "$PAT"
            fi
            pause ;;
-        7) clear; "$PY" -m straysifter status; pause ;;
-        8) clear; "$PY" -m straysifter history; pause ;;
-        9) clear
+        8) clear; "$PY" -m straysifter status; pause ;;
+        9) clear; "$PY" -m straysifter history; pause ;;
+        [Cc]) clear
            read -rp "Clear [W]orking / [H]istory / [S]ource-stats / [B]oth / [N]othing: " X
            case "$X" in
                [Ww]) "$PY" -m straysifter clean --working ;;

@@ -31,11 +31,12 @@ class FetcherConfig:
 
 @dataclass
 class ChecksConfig:
-    # "tcp"     — только TCP (дефолт: ничего живого не режет)
-    # "tcp+tls" — TCP + TLS (чище список, но теряет 5-15% живых)
+    # "tcp"     — DNS + TCP-connect (быстро, широкий список)
+    # "tcp+tls" — DNS + TCP + TLS-handshake (чище, но медленнее)
+    # "singbox" — DNS + real HTTP через sing-box (медленно, узкий список)
     mode: str = "tcp"
 
-    # ── Таймауты ────────────────────────────────────────────────────
+    # ── Таймауты TCP ────────────────────────────────────────────────
     # 3 попытки 3→6→9с, мёртвый endpoint ждёт ~18.4с.
     # Укорачивать не стоит: 2.5/5/7.5 даёт −20% живых, потому что
     # публичные сервера часто отвечают на второй-третий секунде.
@@ -43,13 +44,13 @@ class ChecksConfig:
     tcp_timeout_step: float = 3.0
     tcp_timeout_max: float = 9.0
 
-    # ── Параллелизм ─────────────────────────────────────────────────
+    # ── Параллелизм TCP ─────────────────────────────────────────────
     # 120 — проверенный дефолт. Эксперименты с 180/250 не ускоряют
     # прогон без потери живых: узкое место в самом TCP-handshake,
     # а не в числе воркеров.
     tcp_workers: int = 120
 
-    # ── Повторы ─────────────────────────────────────────────────────
+    # ── Повторы TCP ─────────────────────────────────────────────────
     tcp_attempts: int = 3
 
     # ⚠ КРИТИЧНО: 0.4, не меньше 0.3.
@@ -72,6 +73,12 @@ class ChecksConfig:
     # ── TLS ─────────────────────────────────────────────────────────
     tls_timeout: float = 4.0
     tls_workers: int = 30
+
+    # ── sing-box (mode="singbox") ───────────────────────────────────
+    # Путь к бинарнику. Пусто → <home>/bin/sing-box/sing-box[.exe].
+    singbox_path: str = ""
+    # Таймаут на один ключ (URLTest через Clash API), секунды.
+    singbox_timeout: float = 5.0
 
     # ISO-коды стран, которые НЕ попадают в экспорт.
     # Пусто — экспортируем все. Пример: ["RU", "CN"].
@@ -186,6 +193,8 @@ def _apply_env(cfg: Config) -> None:
             v.strip().lower() in ("1", "true", "yes", "on")
     if v := os.environ.get("SIFTER_SOURCES"):
         cfg.sources = [u.strip() for u in v.split(",") if u.strip()]
+    if v := os.environ.get("SIFTER_SINGBOX_PATH"):
+        cfg.checks.singbox_path = v
 
 
 def load_config(path: Path | None = None) -> Config:

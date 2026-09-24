@@ -1,4 +1,4 @@
-"""fetch → parse → TCP/TLS → GeoIP → save, со статистикой источников."""
+"""fetch → parse → check (TCP или sing-box) → GeoIP → save, со статистикой."""
 from __future__ import annotations
 
 import hashlib
@@ -229,14 +229,16 @@ def run_cycle(
         cfg.checks.mode = mode.lower()
 
     source_urls = urls if urls is not None else cfg.sources
+    use_singbox = cfg.checks.mode == "singbox"
 
     started = datetime.now()
-    log.info("pipeline: cycle start (mode=%s, proxy=%s, geoip=%s%s, sources=%d)",
-             cfg.checks.mode, cfg.fetcher.proxy or "none",
-             "on" if cfg.geoip.enabled else "off",
-             ", cdn=on" if (cfg.geoip.enabled and cfg.geoip.detect_cdn)
-             else "",
-             len(source_urls))
+    log.info(
+        "pipeline: cycle start (mode=%s, proxy=%s, geoip=%s%s, sources=%d)",
+        cfg.checks.mode, cfg.fetcher.proxy or "none",
+        "on" if cfg.geoip.enabled else "off",
+        ", cdn=on" if (cfg.geoip.enabled and cfg.geoip.detect_cdn) else "",
+        len(source_urls),
+    )
 
     if not source_urls:
         log.warning("нет источников: заполни config.json → sources")
@@ -253,14 +255,25 @@ def run_cycle(
         fetcher, archive, urls=source_urls, on_source=on_source,
     )
 
-    checked = run_check(unique, cfg.checks, on_progress=on_progress)
+    # ── Проверка ────────────────────────────────────────────────────
+    # TCP-режим: DNS + TCP-connect, hysteria уходит отдельным файлом.
+    # sing-box режим: DNS + реальный HTTP-запрос через туннель,
+    # hysteria проверяется наравне со всеми.
+    if use_singbox:
+        from .singbox import run_singbox_check
+        checked = run_singbox_check(unique, cfg.checks, on_progress=on_progress)
+        hysteria_candidates: list[ProxyInfo] = []
+    else:
+        checked = run_check(unique, cfg.checks, on_progress=on_progress)
+        hysteria_candidates = [i for i in unique if i.scheme in UDP_SCHEMES]
+        if hysteria_candidates:
+            log.info(
+                "pipeline: hysteria candidates=%d "
+                "(см. hysteria2_candidates.txt)",
+                len(hysteria_candidates),
+            )
 
-    hysteria_candidates = [i for i in unique if i.scheme in UDP_SCHEMES]
-    if hysteria_candidates:
-        log.info("pipeline: hysteria candidates=%d (см. hysteria2_candidates.txt)",
-                 len(hysteria_candidates))
-
-    # GeoIP — и для живых stream-ключей, и для hysteria-кандидатов.
+    # GeoIP — и для живых ключей, и для hysteria-кандидатов (в TCP-режиме).
     # Иначе в hysteria2_candidates.txt страна берётся только из remark,
     # и при пустом remark будет XX, хотя в README обещано «страна по IP».
     apply_geoip(
@@ -286,6 +299,7 @@ def run_cycle(
 
     storage.append_history({
         "ts": started.strftime("%Y-%m-%d %H:%M"),
+        "mode": cfg.checks.mode,
         "total": len(unique),
         "alive": len(checked),
         "hysteria_candidates": len(hysteria_candidates),
