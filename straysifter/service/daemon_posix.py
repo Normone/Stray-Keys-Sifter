@@ -158,24 +158,13 @@ def stop() -> int:
 
     print(f"Останавливаю PID {pid}...")
     try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        _remove_pidfile()
-        return 0
-
-    for _ in range(300):
-        time.sleep(0.1)
-        if not _get_pid():
-            print("Остановлен.")
-            return 0
-
-    print("Не завершился за 30с, SIGKILL...")
-    try:
         os.kill(pid, signal.SIGKILL)
     except ProcessLookupError:
-        pass
+        _remove_pidfile()
+        print("Уже не работает.")
+        return 0
     _remove_pidfile()
-    print("Убит.")
+    print("Остановлен.")
     return 0
 
 
