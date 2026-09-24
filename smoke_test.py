@@ -87,7 +87,7 @@ def t5():
     assert c.tcp_endpoint_budget == 30.0
     assert c.exclude_countries == []
     assert c.singbox_path == ""
-    assert c.singbox_timeout == 5.0
+    assert c.singbox_timeout == 8.0
 
 
 @check("config: pyproject version == __init__.__version__")

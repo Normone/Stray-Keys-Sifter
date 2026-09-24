@@ -78,7 +78,8 @@ class ChecksConfig:
     # Путь к бинарнику. Пусто → <home>/bin/sing-box/sing-box[.exe].
     singbox_path: str = ""
     # Таймаут на один ключ (URLTest через Clash API), секунды.
-    singbox_timeout: float = 5.0
+    # 8.0 покрывает медленные ноды, которые на 5с выглядели мёртвыми.
+    singbox_timeout: float = 8.0
 
     # ISO-коды стран, которые НЕ попадают в экспорт.
     # Пусто — экспортируем все. Пример: ["RU", "CN"].

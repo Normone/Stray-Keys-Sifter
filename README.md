@@ -1,44 +1,41 @@
 # Stray Keys Sifter
 
-Собирает публичные VPN-ключи из открытых источников, отсеивает мёртвые по TCP, определяет страну сервера по IP, складывает живые в один файл для импорта в клиент.
+Собирает публичные VPN-ключи из открытых источников, отсеивает мёртвые, определяет страну сервера по IP, складывает живые в один файл для импорта в клиент.
 
 ## Что даёт на выходе
 
-`data/exports/checked.txt` — список ключей, у которых **TCP-порт открыт**. Это самая дешёвая проверка: она отсеивает заведомо мёртвое (сервер не отвечает, порт закрыт, DNS не резолвится), но **не проверяет, что туннель реально работает**.
+`data/exports/checked.txt` — список живых ключей. Что считается «живым» — зависит от режима проверки:
 
-Из ключей, прошедших TCP-чек, рабочими в клиенте окажется **от 1% до 15%**. Точный процент зависит от:
+- **TCP-режим** (`mode="tcp"` или `tcp+tls`, дефолт) — у ключа **открыт TCP-порт**. Самая дешёвая проверка: отсеивает заведомо мёртвое (сервер не отвечает, порт закрыт, DNS не резолвится), но **не проверяет, что туннель реально работает**. Из прошедших TCP-чек рабочими в клиенте окажется **от 1% до 15%**. Быстро: ~22к ключей за 35 минут.
+- **sing-box режим** (`mode="singbox"`) — **реальный HTTP-запрос через туннель**. Поднимает sing-box, гоняет URLTest через каждый ключ, оставляет те, что действительно проксируют. Список короче, но в клиенте работает большая его часть. Медленно: ~22к ключей за 20 минут, но проверка честная.
 
-- возраста источника (свежие публикации дают больше живых, старые — почти ноль),
-- загруженности сервера (популярные конфиги быстро перегорают),
-- протокола (Reality живёт дольше, чем plain VLESS),
-- региона (RU-whitelist сервера пропускают только российский трафик и не откроют google.com).
+Почему TCP-режим не гарантирует: чтобы отличить «порт открыт» от «туннель работает», нужно поднять соединение через сам ключ (Xray или sing-box) и попробовать HTTP-запрос. Это тяжело, требует бинарь движка и чувствительно к его версии. Именно поэтому появился sing-box-режим: он берёт ту же работу на себя, отсеивая всё, что клиент отбросил бы. Но он и медленнее — компромисс между «быстро и много» и «медленно и точно».
 
-Почему так: чтобы отличить «порт открыт» от «туннель работает», нужно поднять соединение через сам ключ (Xray или sing-box) и попробовать HTTP-запрос. Это тяжело, требует бинарь движка и чувствительно к его версии. Stray Keys Sifter этого не делает — он даёт **широкий список кандидатов**, а финальный отбор делает клиент (Throne, Hiddify, v2rayN и т.п.), который всё равно прогоняет тест задержки после импорта.
+**Практический смысл:** TCP-режим сокращает список с «десятки тысяч строк из подписок» до «несколько сотен кандидатов». sing-box-режим сразу даёт список, который можно залить в клиент и не перебирать вручную. Второй работает в 20+ раз быстрее Throne/Hiddify/Nekobox: 22к ключей за 20 минут против часов у GUI-клиентов.
 
-**Практический смысл:** инструмент сокращает список с «десятки тысяч строк из подписок» до «несколько сотен кандидатов, за которые стоит зацепиться в клиенте». Экономит время на отсеве мусора, но не даёт готовый набор рабочих ключей.
-
-Если нужен список гарантированно рабочих — его надо получить финальным тестом в клиенте. `checked.txt` — это входные данные для такого теста.
+Если в TCP-режиме нужен список гарантированно рабочих — его надо получить финальным тестом в клиенте. `checked.txt` — это входные данные для такого теста.
 
 Делал для себя, чтобы автоматом раз в N часов собирались ключи из различных источников и отсеивались абсолютно мёртвые на случай, если всё имеющееся переблочат, а я давно подписки не обновлял.
 
-### Hysteria2 — отдельно
+### Hysteria2 — по-разному в разных режимах
 
-Hysteria/hysteria2 — UDP-протоколы (QUIC). Проверить их TCP-коннектом нельзя в принципе, а «пинг» через UDP-пакет бессмысленен: современный quic-go игнорирует VN-пакеты и отвечает только на полноценный handshake.
+Hysteria/hysteria2 — UDP-протоколы (QUIC). В TCP-режиме проверить их нельзя в принципе: TCP-коннект к ним провалится, а «пинг» через UDP-пакет бессмысленен — современный quic-go игнорирует VN-пакеты и отвечает только на полноценный handshake.
 
-Поэтому hysteria/hysteria2-ключи **не проверяются вообще**. Они складываются в отдельный файл `data/exports/hysteria2_candidates.txt` — просто список всего, что нашлось в источниках, с флагом страны, но без метки пинга. Страна при этом определяется по IP как обычно (CDN-детект не работает, если домен за Cloudflare — там будет XX и fallback на remark).
-
-Если в источниках hysteria/hysteria2 нет — файл не создаётся.
+- **TCP-режим:** hysteria/hysteria2-ключи **не проверяются вообще**, идут отдельным файлом `data/exports/hysteria2_candidates.txt` — список всего, что нашлось, с флагом страны, но без пинга.
+- **sing-box режим:** hysteria/hysteria2 проверяются наравне со всеми. Файл кандидатов не создаётся, живые hysteria-ключи попадают в общий `checked.txt`.
 
 ## Возможности
 
 - Загрузка источников по списку URL. Список задаётся в `config.json → sources`, правится без изменения кода.
 - Парсинг всех популярных форматов в одном источнике: `vless://`, `vmess://`, `trojan://`, `ss://`, `socks5://`, `http(s)://`, `mtproto://`, `hysteria://`, `hysteria2://`, `hy2://`, `tg://proxy?...`, base64-подписки (в т.ч. с мусором и BOM), Clash YAML, CSV с заголовком и без, plain `host:port`.
 - Дедупликация по `<scheme>://<ident>@<host>:<port>` (ident = uuid / password / method; для схем без идентификатора — просто `host:port`).
+- Два режима проверки: **TCP** (DNS + connect, широкий охват, быстро) и **sing-box** (DNS + HTTP через туннель, узкий охват, точно).
 - TCP-connect всех stream-схем с мульти-IP резолвом (все A/AAAA-записи), 3 попытки с растущим таймаутом (3→6→9 с), опциональным TLS-handshake (`mode: "tcp+tls"`) и последовательным обходом для хостов с ≤3 IP.
+- sing-box: батч-проверка через Clash API, failover на битых ключах (один кривой ключ не уносит весь batch).
 - GeoIP по IP сервера: оффлайн-mmdb, HTTP-fallback через ip-api.com, постоянный кэш `IP → страна`. CDN-фронты (Cloudflare, Fastly, Akamai, AWS, GCP, Azure — по CIDR и по ASN) не считаются за страну origin — для них страна берётся из remark.
 - Фильтр по странам: `checks.exclude_countries: ["RU"]` — ключи из этих стран не попадут в экспорт.
 - Sanitize URI для клиентов на sing-box: удаление `?ed=N` из WebSocket path, замена `type=raw` → `type=tcp`.
-- Экспорт: общий `checked.txt` + отдельный файл на каждую схему + `hysteria2_candidates.txt` без проверки.
+- Экспорт: общий `checked.txt` + отдельный файл на каждую схему + `hysteria2_candidates.txt` (только в TCP-режиме).
 - Статистика источников: сколько найдено, сколько уникальных, сколько живых, сколько есть только здесь, когда последний раз менялось, сколько уникально-живых.
 - История прогонов.
 - Фоновый сервис: Windows — detached subprocess, Linux/macOS — двойной fork. Без systemd и SCM.
@@ -62,6 +59,20 @@ straysifter geoip-update
 
 Без mmdb работает HTTP-lookup через ip-api.com (100 IP за запрос, 15 запросов/мин бесплатно).
 
+### Опционально — sing-box (для режима реальной проверки)
+
+Скачай бинарник sing-box со [страницы релизов](https://github.com/SagerNet/sing-box/releases). Для Windows x64 это `sing-box-<version>-windows-amd64.zip`.
+
+Распакуй и положи `sing-box.exe` в:
+
+```
+<корень проекта>/bin/sing-box/sing-box.exe
+```
+
+На Linux/macOS — `sing-box-<version>-linux-amd64.tar.gz` (или подходящую архитектуру), распаковать в `bin/sing-box/sing-box` и сделать `chmod +x`.
+
+Путь можно переопределить через `checks.singbox_path` в `config.json` или env-переменную `SIFTER_SINGBOX_PATH`.
+
 ## Быстрый старт
 
 ```bash
@@ -69,12 +80,15 @@ straysifter geoip-update
 straysifter-service install
 
 # отредактировать config.json → sources, вписать свои URL
-# затем полный цикл: fetch + TCP-чек + GeoIP + save + export
+# полный цикл (TCP-проверка, быстро)
 straysifter collect
+
+# или полный цикл через sing-box (медленнее, точнее)
+straysifter collect --mode singbox
 
 # результат
 cat data/exports/checked.txt
-cat data/exports/hysteria2_candidates.txt
+cat data/exports/hysteria2_candidates.txt     # только в TCP-режиме
 ```
 
 ## Команды
@@ -98,7 +112,7 @@ cat data/exports/hysteria2_candidates.txt
 | Флаг | Где применим | Описание |
 |---|---|---|
 | `-v`, `--verbose` | любая команда | DEBUG-уровень логов |
-| `--mode tcp\|tcp+tls` | `collect`, `export-source` | Префильтр: только TCP или TCP + TLS-handshake |
+| `--mode tcp\|tcp+tls\|singbox` | `collect`, `export-source` | Метод проверки. `tcp` — только connect. `tcp+tls` — connect + TLS-handshake. `singbox` — реальный HTTP через туннель |
 | `--exclude-country RU,CN` | `collect`, `export`, `export-source` | Исключить страны из экспорта (дополняет `config.json`) |
 | `--no-geoip` | `collect`, `export`, `export-source` | Не использовать GeoIP в этом вызове |
 | `--json` | `sources-stats` | Вывод в JSON |
@@ -125,16 +139,18 @@ straysifter-service debug         # раннер в консоли (Ctrl+C — �
 
 Реализация по платформам:
 
-- **Windows** — detached subprocess (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`). Проверка живости через `OpenProcess`/`GetExitCodeProcess` (`STILL_ACTIVE=259`). Остановка `taskkill` → 30 секунд на graceful shutdown → `taskkill /F`.
-- **Linux/macOS** — двойной fork (`os.fork` × 2 + `setsid`). Проверка живости через `os.kill(pid, 0)`. Остановка `SIGTERM` → 30 секунд → `SIGKILL`.
+- **Windows** — detached subprocess (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`). Проверка живости через `OpenProcess`/`GetExitCodeProcess` (`STILL_ACTIVE=259`). Остановка — мгновенный `taskkill /F`.
+- **Linux/macOS** — двойной fork (`os.fork` × 2 + `setsid`). Проверка живости через `os.kill(pid, 0)`. Остановка — мгновенный `SIGKILL`.
 
-Логи — `straysifter.log` в корне проекта, ротация 5 MB × 5.
+Graceful-остановка посреди активного цикла не поддерживается: цикл дорабатывает до конца, форс-килл обрывает его. Недописанные данные не теряются — все JSON-файлы пишутся атомарно в самом конце.
+
+Логи — `straysifter.log` в корне проекта, ротация 5 MB × 5. Пишет **только сервис**, не ручные запуски.
 PID — `straysifter.pid`.
 Автозапуск при загрузке — на откуп системе: Task Scheduler, `cron @reboot`, launchd.
 
 ## Меню управления
 
-`manage.cmd` (Windows) или `./manage.sh` (Linux/macOS) — текстовое меню для всех команд выше: циклы, конфиг, сервис, логи, папки.
+`manage.cmd` (Windows) или `./manage.sh` (Linux/macOS) — текстовое меню для всех команд выше: циклы, конфиг, сервис, логи, папки. Пункты 1 и 2 — разные режимы проверки (TCP и sing-box).
 
 ```bash
 chmod +x manage.sh
@@ -169,6 +185,8 @@ chmod +x manage.sh
     "tcp_endpoint_budget": 30.0,
     "tls_timeout": 4.0,
     "tls_workers": 30,
+    "singbox_path": "",
+    "singbox_timeout": 8.0,
     "exclude_countries": []
   },
   "geoip": {
@@ -204,7 +222,7 @@ chmod +x manage.sh
 
 | Поле | Тип | Описание |
 |---|---|---|
-| `mode` | str | `tcp` — только TCP-connect. `tcp+tls` — дополнительно TLS-handshake (теряет 5-15% живых, но список чище). |
+| `mode` | str | `tcp` — только TCP-connect (быстро). `tcp+tls` — дополнительно TLS-handshake. `singbox` — реальный HTTP-запрос через sing-box (медленно, точно). |
 | `tcp_timeout` | float | Таймаут первой попытки, секунды. Дефолт 3.0. **Уменьшать не стоит** — публичные сервера часто отвечают на 2-3 секунде. |
 | `tcp_timeout_step` | float | Прирост таймаута на каждой следующей попытке. Дефолт 3.0. |
 | `tcp_timeout_max` | float | Потолок таймаута. Дефолт 9.0. |
@@ -216,6 +234,8 @@ chmod +x manage.sh
 | `tcp_endpoint_budget` | float | Жёсткий бюджет на один endpoint, секунды. `0` — без ограничения. Дефолт 30.0. |
 | `tls_timeout` | float | Таймаут TLS-handshake. Дефолт 4.0. |
 | `tls_workers` | int | Параллельных TLS-handshake. Дефолт 30. |
+| `singbox_path` | str | Путь к бинарнику sing-box. Пусто → `<home>/bin/sing-box/sing-box[.exe]`. |
+| `singbox_timeout` | float | Таймаут на один ключ (URLTest через Clash API), секунды. Дефолт 8.0. |
 | `exclude_countries` | list[str] | ISO-коды стран, которые не попадут в экспорт. Пусто — экспортировать все. |
 
 ### geoip
@@ -260,14 +280,30 @@ chmod +x manage.sh
 
 - `SIFTER_PROXY` — прокси для fetch.
 - `SIFTER_FETCH_PREFER` — `direct` / `proxy` / `direct-only` / `proxy-only`.
-- `SIFTER_MODE` — `tcp` / `tcp+tls`.
+- `SIFTER_MODE` — `tcp` / `tcp+tls` / `singbox`.
 - `SIFTER_EXCLUDE_COUNTRIES` — `RU,CN`.
 - `SIFTER_GEOIP` — `1` / `0` / `true` / `false`.
 - `SIFTER_GEOIP_PROXY`.
 - `SIFTER_GEOIP_DETECT_CDN`.
 - `SIFTER_DATA` — путь к `data/`.
 - `SIFTER_SOURCES` — список URL через запятую.
+- `SIFTER_SINGBOX_PATH` — путь к бинарнику sing-box.
 - `straysifter_HOME` — корень проекта (регистр как есть). Используется в `paths.find_home()`.
+
+## Режим sing-box
+
+`--mode singbox` включает проверку через полноценный движок sing-box вместо голого TCP. Это даёт:
+
+- **Реальную проверку.** URLTest через каждый ключ, а не просто «порт открыт». Список живых короче, но в клиенте работает почти всё.
+- **Hysteria2 наравне со всеми.** UDP-протокол проверяется нативно, отдельный файл кандидатов не создаётся.
+- **Failover на битых ключах.** Если sing-box падает на конкретном outbound — парсер stderr достаёт индекс битого, выкидывает его, batch перезапускается. Один кривой ключ не уносит остальные 4999.
+- **Строгую валидацию полей.** Битый `pbk`, невалидный `uuid`, неизвестный `flow`/`fingerprint`/`transport` — отсеиваются до отправки в sing-box. Такие ключи не тратят слот в batch'е.
+
+Ограничения:
+
+- **XHTTP/SplitHTTP не проверяются.** sing-box не поддерживает эти Xray-транспорты. Такие ключи скипаются (в TCP-режиме они проверяются как обычно).
+- **CDN-фронты.** Многие живые ноды стоят за Cloudflare и получают `XX` (не определяется страна) → не отфильтровываются `--exclude-country`. Это ожидаемое поведение.
+- **Скорость.** ~18 ключей/сек против ~10/сек у TCP-чека. 22к ключей проходят за ~20 минут.
 
 ## GeoIP
 
@@ -310,7 +346,7 @@ straysifter geoip-clear
 
 ## Вывод
 
-`data/exports/checked.txt`:
+`data/exports/checked.txt` (TCP-режим):
 
 ```
 # VPN keys — только живые по TCP (excluded: RU)
@@ -322,7 +358,18 @@ vless://...#🇳🇱 NL-001 [WS+TLS] 82ms
 trojan://...#🇸🇪 SE-001 [Trojan] 118ms
 ```
 
-Формат строки: `<URI>#<флаг> <ISO>-<NNN> [<протокол>] <пинг>ms`.
+`data/exports/checked.txt` (sing-box режим — шапка отличается):
+
+```
+# VPN keys — sing-box verified (excluded: RU)
+# Обновлено: 2026-09-24 12:10:18
+# Всего: 367
+
+vless://...#🇩🇪 DE-001 [Reality] 45ms
+...
+```
+
+Формат строки одинаковый: `<URI>#<флаг> <ISO>-<NNN> [<протокол>] <пинг>ms`.
 
 Отдельные файлы по схемам (создаются, только если такие ключи есть в базе):
 
@@ -333,7 +380,7 @@ trojan://...#🇸🇪 SE-001 [Trojan] 118ms
 - `data/exports/checked_socks.txt`
 - `data/exports/checked_http.txt`
 
-`data/exports/hysteria2_candidates.txt` — hysteria/hysteria2-ключи **без проверки живости**:
+`data/exports/hysteria2_candidates.txt` — **только в TCP-режиме**. hysteria/hysteria2-ключи без проверки живости:
 
 ```
 # Hysteria / Hysteria2 candidates — БЕЗ проверки живости
@@ -348,12 +395,12 @@ hysteria2://...#🇩🇪 DE-001 [Hysteria2] unverified
 hysteria2://...#🇳🇱 NL-002 [Hysteria2] unverified
 ```
 
-Формат строки: `<URI>#<флаг> <ISO>-<NNN> [<протокол>] unverified`.
+В sing-box режиме этот файл не создаётся — hysteria проверяется и идёт в общий `checked.txt`.
 
 Экспорт одного источника через `export-source <pattern>` даёт два файла:
 
-- `data/exports/source_<name>_alive.txt` — только прошедшие TCP-чек.
-- `data/exports/source_<name>_all.txt` — все ключи источника (без hysteria2).
+- `data/exports/source_<name>_alive.txt` — только прошедшие проверку (в том режиме, что был указан).
+- `data/exports/source_<name>_all.txt` — все ключи источника (без hysteria2 в TCP-режиме).
 
 ## Статистика источников
 
@@ -374,7 +421,7 @@ no alive       256    163        0      0    0.0%  selected.txt
 | `found` | Всего URI в источнике (`raw_uris`) |
 | `uniq` | Уникальных ключей в этом источнике |
 | `contrib` | Живых ключей, которых нет ни в одном другом источнике (`unique_alive`) |
-| `alive` | Прошло TCP-чек |
+| `alive` | Прошло проверку |
 | `ratio` | `alive / uniq` |
 
 Статусы (порядок — как в сортировке вывода):
@@ -398,7 +445,7 @@ no alive       256    163        0      0    0.0%  selected.txt
 # показать состояние
 straysifter status
 
-# последние 20 прогонов
+# последние 20 прогонов (с колонкой mode — каким чекером гоняли)
 straysifter history
 straysifter history --limit 50
 
@@ -417,15 +464,19 @@ data/
 ├── exports/
 │   ├── checked.txt                   # живое, общий список
 │   ├── checked_<scheme>.txt          # по схемам (если есть)
-│   └── hysteria2_candidates.txt      # hysteria/hysteria2, БЕЗ проверки
+│   └── hysteria2_candidates.txt      # hysteria/hysteria2, только TCP-режим
 ├── working.json                      # рабочая база (лимит 20 000 записей)
 ├── history.json                      # история прогонов (лимит 500 записей)
 ├── sources.json                      # статистика источников
 ├── geoip_cache.json                  # IP → страна
 └── dbip-country-lite.mmdb            # GeoIP-база (опционально)
+
+bin/
+└── sing-box/
+    └── sing-box.exe                  # бинарник, скачивается вручную
 ```
 
-Ретеншен `data/raw/` — 7 дней. Остальное не чистится автоматически.
+Ретеншен `data/raw/` — 7 дней. Остальное не чистится автоматически. `bin/` в `.gitignore`.
 
 ## Архитектура
 
@@ -446,6 +497,7 @@ Stray-Keys-Sifter/                    # корень (git, config.json, data/, �
 │   │   ├── country.py                # определение страны + флаги
 │   │   ├── geoip.py                  # IP → страна (cache, mmdb, ip-api)
 │   │   ├── checks.py                 # TCP через asyncio, TLS-опция
+│   │   ├── singbox.py                # sing-box: Clash API + batch failover
 │   │   ├── pipeline.py               # fetch → parse → check → GeoIP → save
 │   │   └── storage.py                # база, история, статистика, экспорт
 │   ├── frontends/
@@ -457,6 +509,8 @@ Stray-Keys-Sifter/                    # корень (git, config.json, data/, �
 │       ├── runner.py                 # фоновый цикл
 │       ├── daemon_posix.py           # двойной fork
 │       └── daemon_windows.py         # detached subprocess
+├── bin/
+│   └── sing-box/                     # бинарник sing-box (опционально)
 ├── pyproject.toml
 ├── README.md
 ├── LICENSE
@@ -468,7 +522,7 @@ Stray-Keys-Sifter/                    # корень (git, config.json, data/, �
 └── data/                             # создаётся при первом collect, в .gitignore
 ```
 
-Прокси существует только в `core/fetcher.py`. Ни `checks.py`, ни `pipeline.py`, ни CLI, ни сервис о нём не знают — проверка никогда не пройдёт через прокси, даже если он задан.
+Прокси существует только в `core/fetcher.py`. Ни `checks.py`, ни `singbox.py`, ни `pipeline.py`, ни CLI, ни сервис о нём не знают — проверки никогда не идут через прокси, даже если он задан.
 
 ## Лицензия
 
