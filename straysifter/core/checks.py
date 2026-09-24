@@ -237,58 +237,6 @@ async def _try_ips_sequential(
     return (None, refused == len(ips))
 
 
-async def _try_endpoint_inner(
-    ips: list[str],
-    port: int,
-    cfg: ChecksConfig,
-) -> int | None:
-    n_ips = len(ips)
-    use_seq_allowed = n_ips <= cfg.tcp_sequential_max_ips
-
-    for attempt in range(1, cfg.tcp_attempts + 1):
-        if attempt > 1:
-            await asyncio.sleep(random.uniform(0, cfg.tcp_retry_jitter))
-
-        t = min(
-            cfg.tcp_timeout + (attempt - 1) * cfg.tcp_timeout_step,
-            cfg.tcp_timeout_max,
-        )
-        use_seq = use_seq_allowed and attempt >= cfg.tcp_sequential_after
-
-        if use_seq:
-            ping, all_refused = await _try_ips_sequential(ips, port, t)
-        else:
-            ping, all_refused = await _try_ips_parallel(ips, port, t)
-
-        if ping is not None:
-            return ping
-        if all_refused:
-            return None
-    return None
-
-
-async def _try_endpoint(
-    host: str,
-    ips: list[str],
-    port: int,
-    cfg: ChecksConfig,
-    counters: dict,
-) -> int | None:
-    if cfg.tcp_endpoint_budget <= 0:
-        return await _try_endpoint_inner(ips, port, cfg)
-    try:
-        return await asyncio.wait_for(
-            _try_endpoint_inner(ips, port, cfg),
-            timeout=cfg.tcp_endpoint_budget,
-        )
-    except asyncio.TimeoutError:
-        counters["budget_hits"] += 1
-        if counters["budget_hits"] <= 10:
-            log.info("check: endpoint budget hit: %s:%d (%d IPs)",
-                     host, port, len(ips))
-        return None
-
-
 async def _tcp_batch_async(
     tasks: list[tuple[str, int, list[str]]],
     cfg: ChecksConfig,
@@ -311,8 +259,7 @@ async def _tcp_batch_async(
     async def one(host: str, port: int, ips: list[str]) -> None:
         nonlocal done
         async with sem:
-            # Обёртка вокруг _try_endpoint_inner с классификацией финала.
-            # Нам нужно знать, был ли это чистый RST или timeout.
+            # Классификация финального статуса: ok / refused / timeout / fail.
             status_holder = {"final": "unknown"}
 
             async def _inner_with_status() -> int | None:
