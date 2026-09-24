@@ -1,20 +1,16 @@
-"""GeoIP lookup: host → ISO-код страны, с детектом CDN-фронтов.
+"""GeoIP lookup: host → ISO-код страны.
 
-Драйверы (по порядку):
-    * cache  — data/geoip_cache.json (вечный: IP-страна не меняется)
-    * mmdb   — оффлайн, если maxminddb и .mmdb файл рядом
-    * http   — ip-api.com/batch (100 IP / запрос, 15 запросов/мин)
+Драйверы:
+    * cache  — всегда (data/geoip_cache.json, вечный: IP-страна не меняется)
+    * mmdb   — оффлайн, если установлен maxminddb и есть .mmdb файл
+    * http   — ip-api.com/batch (100 IP / запрос, 15 запросов/мин бесплатно)
 
-CDN-детект (geoip.detect_cdn=true, дефолт):
-    IP попадает в зашитые CIDR Cloudflare/Fastly → "__CDN__".
-    HTTP-lookup: ASN или ISP из списка известных CDN → "__CDN__".
-    В обоих случаях страна НЕ ставится, pipeline откатывается
-    на remark (в ключах часто указана настоящая страна origin'а).
+Порядок: cache → mmdb → http. Каждый успешный ответ кэшируется.
 
-Особенности:
-    mmdb не содержит ASN (только country), поэтому оффлайн-детект
-    ограничен зашитым списком CF/Fastly. Для Akamai/AWS/Google
-    CDN-детект работает только при http_fallback=true.
+HTTP вызывается только если накопилось ≥ MIN_HTTP_BATCH незнакомых IP.
+Для 1-2 IP запрос не окупается: ip-api имеет rate-limit, один запрос
+всё равно занимает 1-2 секунды, а таких «одиночек» за прогон может
+набраться несколько — это лишние 10-30 секунд.
 """
 from __future__ import annotations
 
@@ -33,6 +29,11 @@ log = logging.getLogger(__name__)
 BATCH_SIZE = 100
 HTTP_URL = "http://ip-api.com/batch?fields=countryCode,query,status,as,isp"
 HTTP_DELAY = 4.2  # 15 req/min у ip-api free
+
+# Минимум незнакомых IP, при котором идём в HTTP.
+# Если меньше — эти IP получат страну из remark, что для 1-2 ключей
+# не критично, а 10 секунд ожидания сэкономятся.
+MIN_HTTP_BATCH = 3
 
 CDN_MARKER = "__CDN__"
 
@@ -267,7 +268,6 @@ class GeoIPResolver:
         return s
 
     def _http_batch(self, ips: list[str]) -> dict[str, str]:
-        """Возвращает {ip: cc}, где cc — ISO или CDN_MARKER."""
         s = self._http_session()
         if s is None:
             return {}
@@ -284,19 +284,18 @@ class GeoIPResolver:
                     timeout=10,
                 )
                 r.raise_for_status()
-                rows = r.json()
-                for row in rows:
+                for row in r.json():
                     if row.get("status") != "success":
                         continue
-                    ip = row.get("query", "")
-                    if not ip:
+                    q = row.get("query", "")
+                    if not q:
                         continue
                     if self._detect_cdn and self._is_cdn_by_row(row):
-                        out[ip] = CDN_MARKER
+                        out[q] = CDN_MARKER
                         continue
                     cc = (row.get("countryCode") or "").upper()
                     if cc:
-                        out[ip] = cc
+                        out[q] = cc
             except Exception as e:
                 log.warning("geoip: http batch %d failed: %s", n, e)
             if i + BATCH_SIZE < len(ips):
@@ -325,9 +324,8 @@ class GeoIPResolver:
 
     # ── публичный API ────────────────────────────────────────────────
     def resolve_countries(self, hosts: list[str]) -> dict[str, str]:
-        """host → cc.
+        """host → cc (ISO-код или CDN_MARKER).
 
-        cc = ISO-код или CDN_MARKER ("__CDN__").
         Если не узнали — host отсутствует в словаре.
         """
         unique_hosts = sorted({h for h in hosts if h})
@@ -345,9 +343,9 @@ class GeoIPResolver:
                 if ip:
                     host_to_ip[h] = ip
 
-        # 2) для каждого IP: cdn(cidr) → cache → mmdb → отложить на http
-        result: dict[str, str] = {}          # host -> cc
-        need_http: list[str] = []            # ips для http
+        # 2) cdn(cidr) → cache → mmdb → отложить на http
+        result: dict[str, str] = {}
+        need_http: list[str] = []
         for h, ip in host_to_ip.items():
             if self._detect_cdn and self._is_cdn_by_cidr(ip):
                 result[h] = CDN_MARKER
@@ -367,17 +365,24 @@ class GeoIPResolver:
             elif getattr(self.cfg, "http_fallback", True):
                 need_http.append(ip)
 
-        # 3) http для незнакомых
+        # 3) http для незнакомых, но только если их набралось достаточно
         if need_http and getattr(self.cfg, "http_fallback", True):
             uniq_ips = sorted(set(need_http))
-            log.info("geoip: http lookup for %d uncached IPs", len(uniq_ips))
-            fetched = self._http_batch(uniq_ips)
-            for ip, cc in fetched.items():
-                self._cache[ip] = cc
-                self._cache_dirty = True
-            for h, ip in host_to_ip.items():
-                if h not in result and ip in fetched:
-                    result[h] = fetched[ip]
+            if len(uniq_ips) < MIN_HTTP_BATCH:
+                log.info(
+                    "geoip: %d uncached IPs — ниже порога (%d), "
+                    "используем remark вместо HTTP",
+                    len(uniq_ips), MIN_HTTP_BATCH,
+                )
+            else:
+                log.info("geoip: http lookup for %d uncached IPs", len(uniq_ips))
+                fetched = self._http_batch(uniq_ips)
+                for ip, cc in fetched.items():
+                    self._cache[ip] = cc
+                    self._cache_dirty = True
+                for h, ip in host_to_ip.items():
+                    if h not in result and ip in fetched:
+                        result[h] = fetched[ip]
 
         self.save_cache()
 

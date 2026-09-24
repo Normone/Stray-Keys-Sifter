@@ -41,13 +41,8 @@ def _atomic_write(path: Path, text: str) -> None:
 #  URI-санитизация для клиента
 # ──────────────────────────────────────────────────────────────────────
 
-# `ed=N` в WS path — early data, Xray-only
 _ED_RE = re.compile(r"[?&]ed=\d+", re.IGNORECASE)
-
-# захват значения path в query (до & или конца)
 _PATH_RE = re.compile(r"([?&])path=([^&]*)")
-
-# type=raw → type=tcp (только как отдельное значение параметра)
 _RAW_TYPE_RE = re.compile(r"([?&])type=raw(?=&|$)", re.IGNORECASE)
 
 
@@ -57,7 +52,6 @@ def _sanitize_uri_for_client(raw: str) -> str:
     Не меняет семантику ключа. Работает по query-части, fragment не трогает.
     """
     if "?" not in raw:
-        # быстрая проверка на type=raw без query не имеет смысла
         return raw
 
     head, tail = raw.split("?", 1)
@@ -67,7 +61,6 @@ def _sanitize_uri_for_client(raw: str) -> str:
     else:
         qs, frag = tail, ""
 
-    # 1. WS path: вырезать ?ed=N
     m = _PATH_RE.search(qs)
     if m:
         prefix = m.group(1)
@@ -75,14 +68,12 @@ def _sanitize_uri_for_client(raw: str) -> str:
         decoded = unquote(path_val)
         if _ED_RE.search(decoded):
             cleaned = _ED_RE.sub("", decoded)
-            # если после очистки остался висячий ?/& — срезаем
             cleaned = re.sub(r"[?&]$", "", cleaned)
             if cleaned == "":
                 cleaned = "/"
             new_path_val = quote(cleaned, safe="/?=&")
             qs = qs[:m.start()] + prefix + "path=" + new_path_val + qs[m.end():]
 
-    # 2. type=raw → type=tcp
     qs = _RAW_TYPE_RE.sub(r"\1type=tcp", qs)
 
     return head + "?" + qs + frag
@@ -151,10 +142,6 @@ class SourceStats:
         return asdict(self)
 
 
-# ──────────────────────────────────────────────────────────────────────
-#  Status derivation
-# ──────────────────────────────────────────────────────────────────────
-
 def compute_status(s: dict, now: datetime | None = None) -> str:
     now = now or datetime.now()
 
@@ -204,10 +191,6 @@ STATUS_LABEL = {
 }
 
 
-# ──────────────────────────────────────────────────────────────────────
-#  Фильтры экспорта
-# ──────────────────────────────────────────────────────────────────────
-
 def _filter_excluded_countries(
     items: list[CheckResult],
     excluded: set[str],
@@ -228,10 +211,6 @@ def _filter_excluded_countries(
                  dropped, sorted(excluded))
     return out
 
-
-# ──────────────────────────────────────────────────────────────────────
-#  Storage
-# ──────────────────────────────────────────────────────────────────────
 
 class Storage:
     def __init__(self, base: Path | str):
@@ -398,6 +377,65 @@ class Storage:
 
         log.info("storage: exported %s (%d alive, %d schemes)",
                  p, len(alive), len(by_scheme))
+        return p
+
+    def export_hysteria_candidates(
+        self,
+        infos: list[ProxyInfo],
+        country_of: callable,
+        flag_of: callable,
+    ) -> Path | None:
+        """Все hysteria/hysteria2-ключи без проверки живости.
+
+        TCP-connect к ним бессмысленен (UDP-протокол), полноценная
+        QUIC-проверка требует sing-box. Отдаём отдельным файлом —
+        пользователь сам импортирует в клиент и прогонит тест.
+        """
+        if not infos:
+            return None
+
+        seen: set[str] = set()
+        unique: list[ProxyInfo] = []
+        for i in infos:
+            if i.dedup_key in seen:
+                continue
+            seen.add(i.dedup_key)
+            unique.append(i)
+
+        p = self.exports_dir / "hysteria2_candidates.txt"
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        groups: dict[str, list[ProxyInfo]] = {}
+        for i in unique:
+            groups.setdefault(country_of(i), []).append(i)
+
+        order = sorted(
+            groups.keys(),
+            key=lambda c: (0 if c == "RU" else (1 if c != "XX" else 2), c),
+        )
+
+        lines = [
+            "# Hysteria / Hysteria2 candidates — БЕЗ проверки живости",
+            f"# Обновлено: {now}",
+            f"# Всего: {len(unique)}",
+            "#",
+            "# UDP-протоколы: TCP-connect к ним провалится; полноценная",
+            "# проверка требует sing-box. Импортируй файл в клиент и прогони",
+            "# тест задержки сам.",
+        ]
+        for cc in order:
+            group = groups[cc]
+            for i, info in enumerate(group, 1):
+                base = info.raw.split("#", 1)[0]
+                base = _sanitize_uri_for_client(base)
+                lines.append(
+                    f"{base}#{flag_of(cc)} {cc}-{i:03d} "
+                    f"[{info.protocol_label}] unverified"
+                )
+
+        _atomic_write(p, "\n".join(lines))
+        log.info("storage: exported %s (%d hysteria candidates)",
+                 p, len(unique))
         return p
 
     @staticmethod

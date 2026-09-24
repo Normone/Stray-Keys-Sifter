@@ -1,7 +1,14 @@
-"""Парсеры прокси-ключей: vless, vmess, trojan, ss, socks5, http, mtproto.
+"""Парсеры прокси-ключей: vless, vmess, trojan, ss, socks5, http, mtproto,
+hysteria, hysteria2.
 
 Единый тип ProxyInfo. Схема определяется по префиксу URL.
-Поддерживает plaintext, base64, Clash YAML, CSV, plain host:port.
+Поддерживает:
+    * plaintext-источники со списком ключей,
+    * base64-подписки (в т.ч. с мусором и BOM),
+    * Clash YAML (прокси в виде объектов),
+    * CSV с заголовком и без,
+    * plain host:port построчно.
+tuic/wireguard/anytls распознаются, но не парсятся.
 """
 from __future__ import annotations
 
@@ -18,10 +25,10 @@ log = logging.getLogger(__name__)
 
 SUPPORTED_SCHEMES = {
     "vless", "vmess", "trojan", "ss", "socks", "socks5", "http", "https",
-    "mtproto",
+    "mtproto", "hysteria", "hysteria2", "hy2",
 }
 KNOWN_UNSUPPORTED = {
-    "hysteria2", "hy2", "hysteria", "tuic", "wireguard", "wg", "anytls",
+    "tuic", "wireguard", "wg", "anytls",
 }
 
 _SCHEME_ALT = "|".join(sorted(
@@ -41,17 +48,11 @@ _HAS_SCHEME_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Разделители между ключами (запятая, точка с запятой) — если после них
-# сразу идёт <scheme>://, значит это склейка, а не часть URL.
 _GLUE_RE = re.compile(
     rf'(?<=[^\s])([,;])(?=(?:{_SCHEME_ALT})://)',
     re.IGNORECASE,
 )
 
-
-# ──────────────────────────────────────────────────────────────────────
-#  Тип
-# ──────────────────────────────────────────────────────────────────────
 
 @dataclass
 class ProxyInfo:
@@ -82,6 +83,7 @@ class ProxyInfo:
         return (self.params.get("sni")
                 or self.params.get("serverName")
                 or self.params.get("host")
+                or self.params.get("peer")
                 or self.host)
 
     @property
@@ -144,26 +146,26 @@ class ProxyInfo:
             return "HTTPS" if self.security == "tls" else "HTTP"
         if s == "mtproto":
             return "MTProto"
+        if s == "hysteria2":
+            return "Hysteria2"
+        if s == "hysteria":
+            return "Hysteria"
         return s.upper()
 
 
 VlessInfo = ProxyInfo
 
 
-# ──────────────────────────────────────────────────────────────────────
-#  Статистика по тексту
-# ──────────────────────────────────────────────────────────────────────
-
 @dataclass
 class TextStats:
-    kind: str = "uri"                    # uri / yaml / csv / base64-uri / base64-csv
-    total_lines: int = 0                 # строк в исходнике
-    raw_uris: int = 0                    # найдено <scheme>:// (всего)
-    supported: int = 0                   # из них с поддерживаемой схемой
-    unsupported: int = 0                 # hysteria2 / tuic / anytls / ...
-    parsed_ok: int = 0                   # успешно распарсено
-    parse_fail: int = 0                  # регексп нашёл, парсер вернул None
-    unique: int = 0                      # после дедупа по dedup_key
+    kind: str = "uri"
+    total_lines: int = 0
+    raw_uris: int = 0
+    supported: int = 0
+    unsupported: int = 0
+    parsed_ok: int = 0
+    parse_fail: int = 0
+    unique: int = 0
     by_scheme: dict[str, int] = field(default_factory=dict)
     unsupported_schemes: dict[str, int] = field(default_factory=dict)
 
@@ -180,10 +182,6 @@ class TextStats:
             self.unsupported_schemes[k] = \
                 self.unsupported_schemes.get(k, 0) + v
 
-
-# ──────────────────────────────────────────────────────────────────────
-#  Base64
-# ──────────────────────────────────────────────────────────────────────
 
 def _maybe_decode_base64(text: str) -> str:
     text = text.lstrip("\ufeff")
@@ -212,19 +210,8 @@ def _maybe_decode_base64(text: str) -> str:
 
 
 def _normalize_separators(text: str) -> str:
-    """'vless://...,vless://...' → 'vless://...\\nvless://...'.
-
-    Склейка ключей через запятую/точку с запятой без пробелов ломает regex:
-    он захватывает оба ключа как один. Разбиваем заранее, но только там,
-    где после разделителя идёт новая схема — тогда запятая внутри query
-    (например `alpn=h2,http/1.1`) останется целой.
-    """
     return _GLUE_RE.sub("\n", text)
 
-
-# ──────────────────────────────────────────────────────────────────────
-#  Вспомогательные
-# ──────────────────────────────────────────────────────────────────────
 
 def _split_remark(s: str) -> tuple[str, str]:
     if "#" in s:
@@ -546,6 +533,59 @@ def parse_mtproto(url: str) -> ProxyInfo | None:
         return None
 
 
+def parse_hysteria(url: str) -> ProxyInfo | None:
+    """hysteria2://password@host:port?sni=...&insecure=1#name
+       hy2://password@host:port?...
+       hysteria://host:port?auth=password&peer=sni&insecure=1#name
+
+    v1 (hysteria) несёт auth в query, v2 (hysteria2/hy2) — в userinfo.
+    Оба варианта нормализуем в одно ProxyInfo: password — то, что
+    нужно серверу для аутентификации, sni — из sni/peer, остальные
+    параметры кладём как есть в params.
+    """
+    try:
+        low = url.lower()
+        if low.startswith("hysteria2://"):
+            scheme = "hysteria2"
+            body = url[len("hysteria2://"):]
+        elif low.startswith("hy2://"):
+            scheme = "hysteria2"
+            body = url[len("hy2://"):]
+        elif low.startswith("hysteria://"):
+            scheme = "hysteria"
+            body = url[len("hysteria://"):]
+        else:
+            return None
+
+        body, name = _split_remark(body)
+        body, params = _split_params(body)
+
+        # v2: password@host:port
+        # v1: host:port (auth в params)
+        if "@" in body:
+            password, hostport = body.rsplit("@", 1)
+            password = urllib.parse.unquote(password)
+        else:
+            password = ""
+            hostport = body
+
+        host, port = _hostport(hostport, default_port=443)
+        if not host:
+            return None
+
+        # у hysteria v1 auth может быть в query
+        if not password and params.get("auth"):
+            password = urllib.parse.unquote(params["auth"])
+
+        return ProxyInfo(
+            raw=url, scheme=scheme, host=host, port=port,
+            password=password, name=name, params=params,
+        )
+    except Exception as e:
+        log.debug("parse_hysteria error: %s", e)
+        return None
+
+
 _PARSERS = {
     "vless": parse_vless,
     "vmess": parse_vmess,
@@ -556,6 +596,9 @@ _PARSERS = {
     "http": parse_http,
     "https": parse_http,
     "mtproto": parse_mtproto,
+    "hysteria": parse_hysteria,
+    "hysteria2": parse_hysteria,
+    "hy2": parse_hysteria,
 }
 
 
@@ -567,16 +610,20 @@ def parse_any(url: str) -> ProxyInfo | None:
     return fn(url)
 
 
-# ──────────────────────────────────────────────────────────────────────
-#  Анализ текста
-# ──────────────────────────────────────────────────────────────────────
-
 def extract_keys(text: str) -> list[str]:
     return KEY_RE.findall(text or "")
 
 
+def prepare_text(text: str) -> str:
+    text = (text or "").lstrip("\ufeff")
+    if not text:
+        return text
+    if "proxies:" in text or "proxy-providers:" in text:
+        return text
+    return _maybe_decode_base64(text)
+
+
 def analyze_text(text: str) -> tuple[TextStats, list[ProxyInfo]]:
-    """Возвращает (TextStats, list[ProxyInfo] после дедупа)."""
     stats = TextStats()
     text = (text or "").lstrip("\ufeff")
     if not text:
@@ -584,7 +631,6 @@ def analyze_text(text: str) -> tuple[TextStats, list[ProxyInfo]]:
 
     stats.total_lines = len(text.splitlines())
 
-    # 1. YAML
     if "proxies:" in text or "proxy-providers:" in text:
         from .yaml_parser import parse_clash_yaml
         yaml_infos = parse_clash_yaml(text) or []
@@ -603,7 +649,6 @@ def analyze_text(text: str) -> tuple[TextStats, list[ProxyInfo]]:
         stats.unique = len(unique)
         return stats, unique
 
-    # 2. CSV
     from .csv_parser import looks_like_csv, parse_csv
     if looks_like_csv(text):
         csv_infos = parse_csv(text)
@@ -622,7 +667,6 @@ def analyze_text(text: str) -> tuple[TextStats, list[ProxyInfo]]:
         stats.unique = len(unique)
         return stats, unique
 
-    # 3. base64
     decoded = _maybe_decode_base64(text)
     if decoded != text:
         stats.kind = "base64-"
@@ -647,7 +691,6 @@ def analyze_text(text: str) -> tuple[TextStats, list[ProxyInfo]]:
 
     stats.kind = stats.kind + "uri" if stats.kind else "uri"
 
-    # 4. Обычный URI-список
     text = _normalize_separators(text)
 
     seen: set[str] = set()

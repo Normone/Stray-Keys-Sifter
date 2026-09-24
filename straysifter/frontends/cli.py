@@ -132,6 +132,13 @@ def cmd_collect(args) -> int:
         exclude_countries=excluded,
     )
     print(f"Экспорт: {p}")
+
+    hp = st.export_hysteria_candidates(
+        res.hysteria_candidates, parse_country, country_flag,
+    )
+    if hp:
+        print(f"Экспорт (hysteria, без проверки): {hp}  "
+              f"({len(res.hysteria_candidates)})")
     return 0
 
 
@@ -166,25 +173,33 @@ def cmd_export(args) -> int:
         print("База пуста.")
         return 1
 
-    from ..core.checks import CheckResult
+    from ..core.checks import CheckResult, UDP_SCHEMES
     from ..core.parsers import parse_any
 
     results: list[CheckResult] = []
+    hysteria: list = []
     for rec in db:
         info = parse_any(rec.key)
         if info is None:
             continue
         info.raw = rec.key
-        results.append(CheckResult(info=info, ping=rec.ping))
+        if info.scheme in UDP_SCHEMES:
+            hysteria.append(info)
+        else:
+            results.append(CheckResult(info=info, ping=rec.ping))
 
     if cfg.geoip.enabled:
-        apply_geoip([r.info for r in results], cfg, cfg.storage.base)
+        apply_geoip([r.info for r in results] + hysteria, cfg, cfg.storage.base)
 
     p = st.export_checked(
         results, parse_country, country_flag,
         exclude_countries=excluded,
     )
     print(f"✓ {p}")
+
+    hp = st.export_hysteria_candidates(hysteria, parse_country, country_flag)
+    if hp:
+        print(f"✓ {hp}  (hysteria, без проверки)")
     if excluded:
         print(f"  (excluded countries: {sorted(excluded)})")
     return 0
@@ -197,7 +212,7 @@ def cmd_export_source(args) -> int:
     excluded = _resolve_exclude(args, cfg)
 
     from ..core.archive import SourceArchive
-    from ..core.checks import CheckResult, run_check
+    from ..core.checks import CheckResult, UDP_SCHEMES, run_check
     from ..core.parsers import analyze_text
 
     st = Storage(cfg.storage.base)
@@ -233,6 +248,8 @@ def cmd_export_source(args) -> int:
     results = run_check(infos, cfg.checks, on_progress=_progress)
     print(f"\nTCP alive: {len(results)} / {len(infos)}")
 
+    hysteria_infos = [i for i in infos if i.scheme in UDP_SCHEMES]
+
     if cfg.geoip.enabled:
         apply_geoip([r.info for r in results], cfg, cfg.storage.base)
 
@@ -245,7 +262,8 @@ def cmd_export_source(args) -> int:
         exclude_countries=excluded,
     )
 
-    all_results = [CheckResult(info=i, ping=0) for i in infos]
+    all_results = [CheckResult(info=i, ping=0) for i in infos
+                   if i.scheme not in UDP_SCHEMES]
     if cfg.geoip.enabled:
         apply_geoip([r.info for r in all_results], cfg, cfg.storage.base)
 
@@ -256,136 +274,18 @@ def cmd_export_source(args) -> int:
     )
 
     print(f"✓ {p_alive}  ({len(results)})")
-    print(f"✓ {all_path}    ({len(infos)})")
+    print(f"✓ {all_path}    ({len(all_results)})")
+    if hysteria_infos:
+        print(f"  (hysteria/hysteria2 в источнике: {len(hysteria_infos)}, "
+              f"см. общий hysteria2_candidates.txt после collect)")
     if excluded:
         print(f"  (excluded countries: {sorted(excluded)})")
     return 0
 
 
-# ──────────────────────────────────────────────────────────────────────
-#  geoip-update: качает mmdb с нескольких зеркал
-# ──────────────────────────────────────────────────────────────────────
-
-# Основные зеркала GeoLite2-Country, отдаются через GitHub raw/CDN,
-# без авторизации и без UA-фильтра. Формат совместим с db-ip (тот же
-# ключ country.iso_code), поэтому парсер читает одинаково.
-_GEOIP_MIRRORS = [
-    # P3TERX/GeoLite.mmdb — ежедневное обновление, самый актуальный
-    ("P3TERX/GeoLite.mmdb (Country)",
-     "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"),
-    # Loyalsoldier/geoip — тот же maxmind формат, обновляется из releases
-    ("Loyalsoldier/geoip (Country)",
-     "https://github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb"),
-    # wp-statistics зеркало — обновляется реже, но стабильное
-    ("wp-statistics/GeoLite2-Country",
-     "https://raw.githubusercontent.com/wp-statistics/GeoLite2-Country/master/GeoLite2-Country.mmdb"),
-]
-
-# db-ip требует браузерный UA — если запускать через urllib, отдаёт 403.
-# Оставляем на случай, если GitHub недоступен, но с правильным UA.
-_DBIP_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36")
-
-
-def _download(url: str, dest: Path, *, browser_ua: bool = False) -> int:
-    """Скачивает url в dest. Возвращает размер в байтах.
-
-    browser_ua=True — подставляет браузерный User-Agent (для db-ip.com).
-    """
-    import requests
-
-    headers = {}
-    if browser_ua:
-        headers["User-Agent"] = _DBIP_UA
-        headers["Referer"] = "https://db-ip.com/"
-
-    r = requests.get(url, headers=headers or None, stream=True, timeout=60)
-    r.raise_for_status()
-
-    tmp = dest.with_name(dest.name + ".tmp")
-    total = int(r.headers.get("Content-Length", 0) or 0)
-    got = 0
-    try:
-        with tmp.open("wb") as fh:
-            for chunk in r.iter_content(chunk_size=1 << 20):
-                if not chunk:
-                    continue
-                fh.write(chunk)
-                got += len(chunk)
-                if total:
-                    pct = 100 * got / total
-                    sys.stderr.write(
-                        f"\r      {got // 1024} / {total // 1024} KB ({pct:.0f}%)"
-                    )
-                else:
-                    sys.stderr.write(f"\r      {got // 1024} KB")
-                sys.stderr.flush()
-        sys.stderr.write("\n")
-    except Exception:
-        sys.stderr.write("\n")
-        try:
-            tmp.unlink()
-        except Exception:
-            pass
-        raise
-
-    tmp.replace(dest)
-    return got
-
-
-def _download_dbip(year: int, month: int, dest: Path) -> int:
-    """db-ip.com отдаёт gzip. Скачиваем и распаковываем."""
-    import gzip
-    import requests
-
-    url = (f"https://download.db-ip.com/free/"
-           f"dbip-country-lite-{year}-{month:02d}.mmdb.gz")
-    print(f"      url: {url}")
-
-    headers = {"User-Agent": _DBIP_UA, "Referer": "https://db-ip.com/"}
-    r = requests.get(url, headers=headers, stream=True, timeout=60)
-    r.raise_for_status()
-
-    gz_tmp = dest.with_suffix(".mmdb.gz.tmp")
-    got = 0
-    try:
-        with gz_tmp.open("wb") as fh:
-            for chunk in r.iter_content(chunk_size=1 << 20):
-                if chunk:
-                    fh.write(chunk)
-                    got += len(chunk)
-                    sys.stderr.write(f"\r      {got // 1024} KB (gz)")
-                    sys.stderr.flush()
-        sys.stderr.write("\n")
-
-        tmp_out = dest.with_name(dest.name + ".tmp")
-        with gzip.open(gz_tmp, "rb") as src, tmp_out.open("wb") as dst:
-            while True:
-                chunk = src.read(1 << 20)
-                if not chunk:
-                    break
-                dst.write(chunk)
-        tmp_out.replace(dest)
-    finally:
-        try:
-            gz_tmp.unlink()
-        except Exception:
-            pass
-
-    return dest.stat().st_size
-
-
 def cmd_geoip_update(args) -> int:
-    """Скачать mmdb для оффлайн GeoIP-lookup.
-
-    Порядок попыток:
-        1. GitHub-зеркала GeoLite2-Country (P3TERX, Loyalsoldier, wp-statistics).
-        2. db-ip.com с браузерным User-Agent.
-        3. Если и то и другое — инструкция на ручное скачивание.
-
-    Флаг --from URL — использовать свой источник.
-    """
+    import urllib.request
+    import gzip
     from datetime import date
 
     cfg = load_config()
@@ -393,63 +293,60 @@ def cmd_geoip_update(args) -> int:
     dest = Path(cfg.geoip.db_path) if cfg.geoip.db_path \
         else st.base / "dbip-country-lite.mmdb"
 
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    print(f"target: {dest}")
-    print(f"exists: {'yes (' + str(dest.stat().st_size // 1024) + ' KB)' if dest.exists() else 'no'}")
-
-    # ── режим --from URL ────────────────────────────────────────────
-    if args.from_url:
-        print(f"using custom URL: {args.from_url}")
-        try:
-            size = _download(args.from_url, dest)
-            print(f"✓ {dest} ({size / (1024 * 1024):.1f} MB)")
-            return 0
-        except Exception as e:
-            print(f"✗ failed: {e}")
-            return 1
-
-    # ── 1. GitHub-зеркала ───────────────────────────────────────────
-    for name, url in _GEOIP_MIRRORS:
-        print(f"trying {name}")
-        print(f"      url: {url}")
-        try:
-            size = _download(url, dest)
-            print(f"✓ {dest} ({size / (1024 * 1024):.1f} MB)")
-            print()
-            print("готово. mmdb подхватится при следующем запуске.")
-            print("проверить: straysifter status  (должно быть 'mmdb=yes')")
-            return 0
-        except Exception as e:
-            print(f"✗ failed: {e}")
-
-    # ── 2. db-ip.com с браузерным UA ────────────────────────────────
     today = date.today()
+    urls: list[str] = []
     y, m = today.year, today.month
-    print("trying db-ip.com (3 latest months)")
     for _ in range(3):
-        try:
-            size = _download_dbip(y, m, dest)
-            print(f"✓ {dest} ({size / (1024 * 1024):.1f} MB)")
-            print()
-            print("готово. mmdb подхватится при следующем запуске.")
-            return 0
-        except Exception as e:
-            print(f"✗ db-ip {y}-{m:02d}: {e}")
+        urls.append(f"https://download.db-ip.com/free/"
+                    f"dbip-country-lite-{y}-{m:02d}.mmdb.gz")
         m -= 1
         if m == 0:
             m = 12
             y -= 1
 
-    # ── 3. Всё провалилось ──────────────────────────────────────────
-    print()
-    print("Автоматически не удалось.")
-    print("Попробуй вручную:")
-    print("  1. Скачай .mmdb с https://github.com/P3TERX/GeoLite.mmdb")
-    print("  2. Положи в: " + str(dest))
-    print()
-    print("Или укажи свой источник:")
-    print(f"  straysifter geoip-update --from https://.../Country.mmdb")
-    return 1
+    print(f"target: {dest}")
+    print("trying URLs:")
+    for u in urls:
+        print(f"  {u}")
+
+    gz_tmp = dest.with_suffix(".mmdb.gz.tmp")
+    ok = False
+    for u in urls:
+        try:
+            print(f"downloading {u} ...")
+            urllib.request.urlretrieve(u, gz_tmp)
+            ok = True
+            break
+        except Exception as e:
+            print(f"  failed: {e}")
+
+    if not ok:
+        print()
+        print("Автоматически не удалось.")
+        print("Скачай вручную с https://db-ip.com/db/download/ip-to-country-lite")
+        print(f"и положи .mmdb в: {dest}")
+        return 1
+
+    try:
+        tmp_out = dest.with_suffix(".mmdb.tmp")
+        with gzip.open(gz_tmp, "rb") as src, open(tmp_out, "wb") as dst:
+            while True:
+                chunk = src.read(1 << 20)
+                if not chunk:
+                    break
+                dst.write(chunk)
+        tmp_out.replace(dest)
+        gz_tmp.unlink(missing_ok=True)
+        size_mb = dest.stat().st_size / (1024 * 1024)
+        print(f"✓ {dest} ({size_mb:.1f} MB)")
+        print()
+        print("Для использования оффлайн-lookup:")
+        print("  pip install maxminddb")
+        print("  включи geoip.enabled=true в config.json")
+        return 0
+    except Exception as e:
+        print(f"распаковка не удалась: {e}")
+        return 1
 
 
 def cmd_geoip_clear(args) -> int:
@@ -480,11 +377,9 @@ def cmd_status(args) -> int:
     print(f"mode          : {cfg.checks.mode}")
     print(f"sources       : {len(cfg.sources)} URL")
     geoip_cache = st.base / "geoip_cache.json"
-    mmdb = st.base / "dbip-country-lite.mmdb"
     geoip_line = "on" if cfg.geoip.enabled else "off"
     if cfg.geoip.enabled:
-        geoip_line += (f" (mmdb: {'yes' if mmdb.exists() else 'no'}, "
-                       f"cache: {'yes' if geoip_cache.exists() else 'no'})")
+        geoip_line += f" (cache: {'yes' if geoip_cache.exists() else 'no'})"
     print(f"geoip         : {geoip_line}")
     if cfg.checks.exclude_countries:
         print(f"exclude       : {sorted(cfg.checks.exclude_countries)}")
@@ -797,11 +692,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_export)
 
     sp = sub.add_parser("geoip-update",
-                        help="скачать mmdb для оффлайн-GeoIP "
-                             "(GitHub-зеркала GeoLite2 или db-ip.com)")
-    sp.add_argument("--from", dest="from_url", default=None,
-                    metavar="URL",
-                    help="взять mmdb из своего источника")
+                        help="скачать mmdb для оффлайн-GeoIP")
+    sp.add_argument("--from", dest="from_url", default=None, metavar="URL")
     sp.set_defaults(func=cmd_geoip_update)
 
     sub.add_parser("geoip-clear",

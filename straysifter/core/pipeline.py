@@ -9,15 +9,10 @@ from pathlib import Path
 from typing import Callable
 
 from .archive import SourceArchive, FetchedText
-from .checks import CheckResult, ProgressCb, run_check
+from .checks import CheckResult, ProgressCb, UDP_SCHEMES, run_check
 from .config import Config
 from .fetcher import SourceFetcher
-from .parsers import (
-    ProxyInfo,
-    TextStats,
-    analyze_text,
-    dedup_vless,
-)
+from .parsers import ProxyInfo, TextStats, analyze_text, dedup_vless
 from .storage import SourceStats, Storage
 
 log = logging.getLogger(__name__)
@@ -31,6 +26,7 @@ class RunResult:
     fetched: list[FetchedText]
     all_infos: list[ProxyInfo]
     checked: list[CheckResult]
+    hysteria_candidates: list[ProxyInfo]
     source_infos: dict[str, list[ProxyInfo]]
     text_stats: dict[str, TextStats]
     started_at: datetime
@@ -259,6 +255,11 @@ def run_cycle(
 
     checked = run_check(unique, cfg.checks, on_progress=on_progress)
 
+    hysteria_candidates = [i for i in unique if i.scheme in UDP_SCHEMES]
+    if hysteria_candidates:
+        log.info("pipeline: hysteria candidates=%d (см. hysteria2_candidates.txt)",
+                 len(hysteria_candidates))
+
     apply_geoip([r.info for r in checked], cfg, cfg.storage.base)
 
     finished = datetime.now()
@@ -266,6 +267,7 @@ def run_cycle(
         fetched=fetched,
         all_infos=unique,
         checked=checked,
+        hysteria_candidates=hysteria_candidates,
         source_infos=source_infos,
         text_stats=text_stats,
         started_at=started,
@@ -280,6 +282,7 @@ def run_cycle(
         "ts": started.strftime("%Y-%m-%d %H:%M"),
         "total": len(unique),
         "alive": len(checked),
+        "hysteria_candidates": len(hysteria_candidates),
         "by_scheme": result.by_scheme,
         "alive_by_scheme": result.alive_by_scheme,
         "duration_s": round(result.duration_s, 1),

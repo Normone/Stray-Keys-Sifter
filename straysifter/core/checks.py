@@ -1,11 +1,18 @@
-"""Проверки ключей — TCP (+ опционально TLS).
+"""Проверки ключей — TCP для stream-схем.
 
-Ключевое:
-    * DNS через getaddrinfo — ВСЕ A/AAAA-записи, а не только первая.
-    * Прогрессивный таймаут 3→6→9с: медленные сервера доживают до 3-й попытки.
-    * Sequential для хостов с <= N IP, иначе parallel — не съедаем бюджет.
-    * Жёсткий бюджет на endpoint (по умолчанию 30с), с логом обрезанных.
-    * Никаких прокси — TCP всегда напрямую.
+vless/vmess/trojan/ss/socks/http/mtproto — TCP через asyncio.
+DNS резолвится заранее (все A/AAAA-записи). Прокси не используется:
+проверки идут напрямую.
+
+Hysteria/hysteria2 не проверяются. Это UDP-протоколы, TCP-connect к ним
+провалится; полноценная проверка через QUIC требует валидного Initial
+с шифрованным ClientHello. Pipeline сохраняет такие ключи отдельным
+файлом кандидатов для ручной проверки в клиенте.
+
+Ретраи не применяются к RST-ответам: ConnectionRefusedError означает,
+что порт закрыт, повтор бессмыслен. На практике на Windows + российский
+ISP такие ответы редки (ISP блокирует через DROP), но для хостов без
+блокировок это даёт экономию.
 """
 from __future__ import annotations
 
@@ -16,7 +23,7 @@ import socket
 import ssl
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
 from .config import ChecksConfig
@@ -25,6 +32,14 @@ from .parsers import ProxyInfo
 log = logging.getLogger(__name__)
 
 ProgressCb = Callable[[str, int, int, int], None]
+
+TCP_SCHEMES = {"vless", "vmess", "trojan", "ss", "socks", "http", "mtproto"}
+UDP_SCHEMES = {"hysteria", "hysteria2"}
+
+# errno для Windows WSAECONNREFUSED — на случай, если asyncio не
+# конвертирует его в ConnectionRefusedError.
+_WSA_CONNREFUSED = 10061
+_ECONNREFUSED = 111  # Linux
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -129,7 +144,29 @@ def resolve_hosts(
 #  TCP
 # ──────────────────────────────────────────────────────────────────────
 
-async def _try_one_ip(ip: str, port: int, timeout: float) -> int | None:
+def _classify_exception(e: BaseException) -> str:
+    """Сводит разные исключения к одному из статусов.
+
+    Windows может кидать OSError с errno 10061 вместо ConnectionRefusedError,
+    поэтому проверяем и то и другое.
+    """
+    if isinstance(e, ConnectionRefusedError):
+        return "refused"
+    if isinstance(e, asyncio.TimeoutError):
+        return "timeout"
+    if isinstance(e, OSError):
+        err = getattr(e, "errno", None)
+        if err in (_WSA_CONNREFUSED, _ECONNREFUSED):
+            return "refused"
+        # WSAETIMEDOUT = 10060 (Windows), ETIMEDOUT = 110 (Linux)
+        if err in (10060, 110):
+            return "timeout"
+        return "fail"
+    return "fail"
+
+
+async def _try_one_ip(ip: str, port: int, timeout: float) -> tuple[str, int | None]:
+    """Возвращает (status, ping_ms). status ∈ {"ok","refused","timeout","fail"}."""
     try:
         t0 = time.perf_counter()
         _, writer = await asyncio.wait_for(
@@ -141,15 +178,26 @@ async def _try_one_ip(ip: str, port: int, timeout: float) -> int | None:
             await writer.wait_closed()
         except Exception:
             pass
-        return ping
-    except Exception:
-        return None
+        return ("ok", ping)
+    except asyncio.CancelledError:
+        raise
+    except BaseException as e:
+        return (_classify_exception(e), None)
 
 
-async def _try_ips_parallel(ips: list[str], port: int, timeout: float) -> int | None:
+async def _try_ips_parallel(
+    ips: list[str], port: int, timeout: float,
+) -> tuple[int | None, bool]:
+    """Пробует все IP параллельно.
+
+    Возвращает (ping_or_None, all_refused):
+        ping — если хоть один IP ответил;
+        all_refused=True — все IP ответили RST, endpoint мёртв, ретрай не нужен.
+    """
     if not ips:
-        return None
+        return (None, True)
     tasks = [asyncio.create_task(_try_one_ip(ip, port, timeout)) for ip in ips]
+    refused = 0
     try:
         pending: set[asyncio.Task] = set(tasks)
         while pending:
@@ -158,24 +206,35 @@ async def _try_ips_parallel(ips: list[str], port: int, timeout: float) -> int | 
             )
             for t in done:
                 try:
-                    r = t.result()
+                    status, ping = t.result()
                 except Exception:
-                    continue
-                if r is not None:
-                    return r
-        return None
+                    status, ping = "fail", None
+                if status == "ok":
+                    for x in pending:
+                        x.cancel()
+                    return (ping, False)
+                if status == "refused":
+                    refused += 1
+        return (None, refused == len(ips))
     finally:
         for t in tasks:
             if not t.done():
                 t.cancel()
 
 
-async def _try_ips_sequential(ips: list[str], port: int, timeout: float) -> int | None:
+async def _try_ips_sequential(
+    ips: list[str], port: int, timeout: float,
+) -> tuple[int | None, bool]:
+    if not ips:
+        return (None, True)
+    refused = 0
     for ip in ips:
-        r = await _try_one_ip(ip, port, timeout)
-        if r is not None:
-            return r
-    return None
+        status, ping = await _try_one_ip(ip, port, timeout)
+        if status == "ok":
+            return (ping, False)
+        if status == "refused":
+            refused += 1
+    return (None, refused == len(ips))
 
 
 async def _try_endpoint_inner(
@@ -197,12 +256,14 @@ async def _try_endpoint_inner(
         use_seq = use_seq_allowed and attempt >= cfg.tcp_sequential_after
 
         if use_seq:
-            r = await _try_ips_sequential(ips, port, t)
+            ping, all_refused = await _try_ips_sequential(ips, port, t)
         else:
-            r = await _try_ips_parallel(ips, port, t)
+            ping, all_refused = await _try_ips_parallel(ips, port, t)
 
-        if r is not None:
-            return r
+        if ping is not None:
+            return ping
+        if all_refused:
+            return None
     return None
 
 
@@ -232,44 +293,98 @@ async def _tcp_batch_async(
     tasks: list[tuple[str, int, list[str]]],
     cfg: ChecksConfig,
     on_progress: ProgressCb | None,
-) -> dict[tuple[str, int], int]:
+) -> tuple[dict[tuple[str, int], int], dict[str, int]]:
     sem = asyncio.Semaphore(cfg.tcp_workers)
     result: dict[tuple[str, int], int] = {}
     total = len(tasks)
     done = 0
     lock = asyncio.Lock()
-    counters = {"budget_hits": 0}
+    counters = {
+        "budget_hits": 0,
+        "ok": 0,
+        "refused": 0,
+        "timeout": 0,
+        "fail": 0,
+        "all_refused_early": 0,   # endpoint'ы, которые вышли после RST без ретраев
+    }
 
     async def one(host: str, port: int, ips: list[str]) -> None:
         nonlocal done
         async with sem:
-            ping = await _try_endpoint(host, ips, port, cfg, counters)
+            # Обёртка вокруг _try_endpoint_inner с классификацией финала.
+            # Нам нужно знать, был ли это чистый RST или timeout.
+            status_holder = {"final": "unknown"}
+
+            async def _inner_with_status() -> int | None:
+                n_ips = len(ips)
+                use_seq_allowed = n_ips <= cfg.tcp_sequential_max_ips
+
+                for attempt in range(1, cfg.tcp_attempts + 1):
+                    if attempt > 1:
+                        await asyncio.sleep(random.uniform(0, cfg.tcp_retry_jitter))
+
+                    t = min(
+                        cfg.tcp_timeout + (attempt - 1) * cfg.tcp_timeout_step,
+                        cfg.tcp_timeout_max,
+                    )
+                    use_seq = use_seq_allowed and attempt >= cfg.tcp_sequential_after
+
+                    if use_seq:
+                        ping, all_refused = await _try_ips_sequential(ips, port, t)
+                    else:
+                        ping, all_refused = await _try_ips_parallel(ips, port, t)
+
+                    if ping is not None:
+                        status_holder["final"] = "ok"
+                        return ping
+                    if all_refused:
+                        status_holder["final"] = "refused"
+                        if attempt == 1:
+                            counters["all_refused_early"] += 1
+                        return None
+                status_holder["final"] = "timeout"
+                return None
+
+            if cfg.tcp_endpoint_budget <= 0:
+                ping = await _inner_with_status()
+            else:
+                try:
+                    ping = await asyncio.wait_for(
+                        _inner_with_status(),
+                        timeout=cfg.tcp_endpoint_budget,
+                    )
+                except asyncio.TimeoutError:
+                    counters["budget_hits"] += 1
+                    if counters["budget_hits"] <= 10:
+                        log.info("check: endpoint budget hit: %s:%d (%d IPs)",
+                                 host, port, len(ips))
+                    ping = None
+                    status_holder["final"] = "timeout"
+
             async with lock:
                 done += 1
                 if ping is not None:
                     result[(host, port)] = ping
+                    counters["ok"] += 1
+                else:
+                    st = status_holder["final"]
+                    if st in counters:
+                        counters[st] += 1
+                    else:
+                        counters["fail"] += 1
                 if on_progress and (done % 50 == 0 or done == total):
                     on_progress("TCP", done, total, len(result))
 
     await asyncio.gather(*(one(h, p, ips) for h, p, ips in tasks))
-
-    result["__budget_hits__"] = counters["budget_hits"]  # type: ignore[assignment]
-    return result
+    return result, counters
 
 
-def tcp_batch(
+def _tcp_batch(
     endpoints: list[tuple[str, int]],
     cfg: ChecksConfig,
     on_progress: ProgressCb | None,
-    host_to_ips: dict[str, list[str]] | None = None,
+    host_to_ips: dict[str, list[str]],
 ) -> dict[tuple[str, int], int]:
-    if not endpoints:
-        return {}
-
-    hosts = sorted({h for h, _ in endpoints})
-    if host_to_ips is None:
-        host_to_ips = resolve_hosts(hosts, on_progress=on_progress)
-
     tasks: list[tuple[str, int, list[str]]] = []
     for h, p in endpoints:
         ips = host_to_ips.get(h, [])
@@ -278,7 +393,6 @@ def tcp_batch(
         tasks.append((h, p, ips))
 
     if not tasks:
-        log.warning("tcp_batch: ни один хост не резолвится")
         return {}
 
     log.info(
@@ -288,24 +402,21 @@ def tcp_batch(
         cfg.tcp_attempts, cfg.tcp_endpoint_budget, cfg.tcp_workers,
     )
 
-    raw = asyncio.run(_tcp_batch_async(tasks, cfg, on_progress))
-
-    budget_hits = int(raw.pop("__budget_hits__", 0))  # type: ignore[arg-type]
-    result = raw  # type: ignore[assignment]
+    result, counters = asyncio.run(_tcp_batch_async(tasks, cfg, on_progress))
 
     log.info("check: TCP done — %d/%d alive, %d budget-cut",
-             len(result), len(endpoints), budget_hits)
-    if budget_hits:
-        log.info(
-            "check: %d endpoints не уложились в %.0fs budget "
-            "(если их много — подними tcp_endpoint_budget в config.json)",
-            budget_hits, cfg.tcp_endpoint_budget,
-        )
-    return result  # type: ignore[return-value]
+             len(result), len(endpoints), counters["budget_hits"])
+    log.info(
+        "check: statuses — ok=%d refused=%d timeout=%d fail=%d "
+        "(early-exit on refused: %d)",
+        counters["ok"], counters["refused"], counters["timeout"],
+        counters["fail"], counters["all_refused_early"],
+    )
+    return result
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  TLS
+#  TLS (опция)
 # ──────────────────────────────────────────────────────────────────────
 
 def _tls_handshake(host: str, port: int, server_name: str | None,
@@ -372,7 +483,7 @@ def run_check(
     cfg: ChecksConfig,
     on_progress: ProgressCb | None = None,
 ) -> list[CheckResult]:
-    infos = list(infos)
+    infos = [i for i in infos if i.scheme in TCP_SCHEMES]
     if not infos:
         return []
 
@@ -382,14 +493,12 @@ def run_check(
     endpoints = sorted({i.endpoint for i in infos})
     hosts = sorted({h for h, _ in endpoints})
 
-    log.info("check: %d keys, %d endpoints, %d unique hosts",
+    log.info("check: %d tcp keys, %d endpoints, %d unique hosts",
              len(infos), len(endpoints), len(hosts))
 
     host_to_ips = resolve_hosts(hosts, on_progress=on_progress)
 
-    ping_by_ep = tcp_batch(
-        endpoints, cfg, on_progress, host_to_ips=host_to_ips,
-    )
+    ping_by_ep = _tcp_batch(endpoints, cfg, on_progress, host_to_ips)
     after_tcp = [i for i in infos if i.endpoint in ping_by_ep]
 
     if not do_tls:
