@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from ..core import load_config
+from ..core.config import default_config_path
 from ..core.country import country_flag, parse_country
 from ..core.pipeline import apply_geoip, run_cycle
 from ..core.storage import STATUS_LABEL, Storage, compute_status
@@ -291,36 +292,129 @@ def cmd_export_source(args) -> int:
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  config-set: точечное изменение config.json
+# ──────────────────────────────────────────────────────────────────────
+
+_MODE_CHOICES = ("tcp", "tcp+tls", "singbox")
+
+
+def _coerce_value(raw: str, current):
+    """Приводит строку к типу текущего значения поля.
+
+    Позволяет `config-set checks.tcp_workers 200` не превращать 200 в "200".
+    Для list[str] — разбивает по запятой.
+    """
+    if isinstance(current, bool):
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    if isinstance(current, int) and not isinstance(current, bool):
+        return int(raw)
+    if isinstance(current, float):
+        return float(raw)
+    if isinstance(current, list):
+        return [s.strip() for s in raw.split(",") if s.strip()]
+    return raw
+
+
+def _walk_for_set(data: dict, path: list[str], value):
+    """Возвращает (old_value, actual_value_after_coerce)."""
+    node = data
+    for key in path[:-1]:
+        if key not in node or not isinstance(node[key], dict):
+            node[key] = {}
+        node = node[key]
+    leaf = path[-1]
+    old = node.get(leaf)
+    new = _coerce_value(value, old)
+    # Спец-валидация для известных enum-полей
+    if path == ["checks", "mode"]:
+        if new not in _MODE_CHOICES:
+            raise ValueError(
+                f"checks.mode должен быть одним из: {', '.join(_MODE_CHOICES)}"
+            )
+    node[leaf] = new
+    return old, new
+
+
+def cmd_config_set(args) -> int:
+    cfg_path = default_config_path()
+    if not cfg_path.exists():
+        print(f"config.json не найден: {cfg_path}")
+        print("Сначала: straysifter-service install")
+        return 1
+
+    try:
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"не могу прочитать config.json: {e}")
+        return 1
+
+    path = args.key.split(".")
+    try:
+        old, new = _walk_for_set(data, path, args.value)
+    except ValueError as e:
+        print(f"✗ {e}")
+        return 1
+    except Exception as e:
+        print(f"✗ не могу установить {args.key}: {e}")
+        return 1
+
+    cfg_path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    print(f"✓ {args.key}: {old!r} → {new!r}")
+    print(f"  файл: {cfg_path}")
+    if path == ["checks", "mode"]:
+        print("  сервис читает mode при старте. Если сервис запущен — "
+              "перезапусти его:")
+        print("    straysifter-service restart")
+    return 0
+
+
+def cmd_config_show(args) -> int:
+    cfg_path = default_config_path()
+    if not cfg_path.exists():
+        print(f"config.json не найден: {cfg_path}")
+        return 1
+    try:
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"не могу прочитать config.json: {e}")
+        return 1
+
+    key = args.key
+    node = data
+    for part in key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            print(f"ключ не найден: {key}")
+            return 1
+        node = node[part]
+    if isinstance(node, (dict, list)):
+        print(json.dumps(node, indent=2, ensure_ascii=False))
+    else:
+        print(node)
+    return 0
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  geoip-update: качает mmdb с нескольких зеркал
 # ──────────────────────────────────────────────────────────────────────
 
-# Основные зеркала GeoLite2-Country, отдаются через GitHub raw/CDN,
-# без авторизации и без UA-фильтра. Формат совместим с db-ip (тот же
-# ключ country.iso_code), поэтому парсер читает одинаково.
 _GEOIP_MIRRORS = [
-    # P3TERX/GeoLite.mmdb — ежедневное обновление, самый актуальный
     ("P3TERX/GeoLite.mmdb (Country)",
      "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"),
-    # Loyalsoldier/geoip — тот же maxmind формат, обновляется из releases
     ("Loyalsoldier/geoip (Country)",
      "https://github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb"),
-    # wp-statistics зеркало — обновляется реже, но стабильное
     ("wp-statistics/GeoLite2-Country",
      "https://raw.githubusercontent.com/wp-statistics/GeoLite2-Country/master/GeoLite2-Country.mmdb"),
 ]
 
-# db-ip требует браузерный UA — если запускать через urllib, отдаёт 403.
-# Оставляем на случай, если GitHub недоступен, но с правильным UA.
 _DBIP_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36")
 
 
 def _download(url: str, dest: Path, *, browser_ua: bool = False) -> int:
-    """Скачивает url в dest. Возвращает размер в байтах.
-
-    browser_ua=True — подставляет браузерный User-Agent (для db-ip.com).
-    """
     import requests
 
     headers = {}
@@ -363,7 +457,6 @@ def _download(url: str, dest: Path, *, browser_ua: bool = False) -> int:
 
 
 def _download_dbip(year: int, month: int, dest: Path) -> int:
-    """db-ip.com отдаёт gzip. Скачиваем и распаковываем."""
     import gzip
     import requests
 
@@ -405,15 +498,6 @@ def _download_dbip(year: int, month: int, dest: Path) -> int:
 
 
 def cmd_geoip_update(args) -> int:
-    """Скачать mmdb для оффлайн GeoIP-lookup.
-
-    Порядок попыток:
-        1. GitHub-зеркала GeoLite2-Country (P3TERX, Loyalsoldier, wp-statistics).
-        2. db-ip.com с браузерным User-Agent.
-        3. Если и то и другое — инструкция на ручное скачивание.
-
-    Флаг --from URL — использовать свой источник.
-    """
     from datetime import date
 
     cfg = load_config()
@@ -428,7 +512,6 @@ def cmd_geoip_update(args) -> int:
     print(f"target: {dest}")
     print(f"exists: {exists_info}")
 
-    # ── режим --from URL ────────────────────────────────────────────
     if args.from_url:
         print(f"using custom URL: {args.from_url}")
         try:
@@ -439,7 +522,6 @@ def cmd_geoip_update(args) -> int:
             print(f"✗ failed: {e}")
             return 1
 
-    # ── 1. GitHub-зеркала ───────────────────────────────────────────
     for name, url in _GEOIP_MIRRORS:
         print(f"trying {name}")
         print(f"      url: {url}")
@@ -453,7 +535,6 @@ def cmd_geoip_update(args) -> int:
         except Exception as e:
             print(f"✗ failed: {e}")
 
-    # ── 2. db-ip.com с браузерным UA ────────────────────────────────
     today = date.today()
     y, m = today.year, today.month
     print("trying db-ip.com (3 latest months)")
@@ -471,7 +552,6 @@ def cmd_geoip_update(args) -> int:
             m = 12
             y -= 1
 
-    # ── 3. Всё провалилось ──────────────────────────────────────────
     print()
     print("Автоматически не удалось.")
     print("Попробуй вручную:")
@@ -837,6 +917,17 @@ def build_parser() -> argparse.ArgumentParser:
     _add_exclude_flag(sp)
     _add_no_geoip_flag(sp)
     sp.set_defaults(func=cmd_export)
+
+    sp = sub.add_parser("config-set",
+                        help="изменить поле в config.json (dotted path)")
+    sp.add_argument("key", help="например checks.mode или checks.tcp_workers")
+    sp.add_argument("value", help="новое значение (список — через запятую)")
+    sp.set_defaults(func=cmd_config_set)
+
+    sp = sub.add_parser("config-show",
+                        help="показать одно поле из config.json")
+    sp.add_argument("key", help="например checks.mode")
+    sp.set_defaults(func=cmd_config_show)
 
     sp = sub.add_parser("geoip-update",
                         help="скачать mmdb для оффлайн-GeoIP "
