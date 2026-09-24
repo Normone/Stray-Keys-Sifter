@@ -57,11 +57,17 @@ def t3():
     from straysifter.service import daemon_windows, daemon_posix
 
 
-@check("imports: geoip + country + checks")
+@check("imports: geoip + country + checks + singbox")
 def t4():
     from straysifter.core.geoip import GeoIPResolver
     from straysifter.core.country import parse_country, country_flag
     from straysifter.core.checks import run_check, _try_ips_parallel
+    from straysifter.core.singbox import (
+        run_singbox_check, build_outbound, find_binary,
+        _extract_outbound_index, _normalize_flow, _is_valid_pbk,
+        _is_valid_sid, _is_valid_uuid, _normalize_fp,
+        _normalize_ss_method, _normalize_vmess_security,
+    )
 
 
 # ── конфиг ───────────────────────────────────────────────────────────
@@ -80,6 +86,8 @@ def t5():
     assert c.tcp_sequential_after == 2
     assert c.tcp_endpoint_budget == 30.0
     assert c.exclude_countries == []
+    assert c.singbox_path == ""
+    assert c.singbox_timeout == 5.0
 
 
 @check("config: pyproject version == __init__.__version__")
@@ -302,6 +310,140 @@ def t42():
         assert "unverified" in text
 
 
+# ── singbox ──────────────────────────────────────────────────────────
+
+@check("singbox: _normalize_flow")
+def t60():
+    from straysifter.core.singbox import _normalize_flow
+    assert _normalize_flow("") == ""
+    assert _normalize_flow("xtls-rprx-vision") == "xtls-rprx-vision"
+    assert _normalize_flow("xtls-rprx-vision-udp443") == "xtls-rprx-vision"
+    assert _normalize_flow("xtls-rprx-direct") == ""
+    assert _normalize_flow("garbage") == ""
+
+
+@check("singbox: _is_valid_pbk")
+def t61():
+    from straysifter.core.singbox import _is_valid_pbk
+    assert not _is_valid_pbk("")
+    assert not _is_valid_pbk("short")
+    assert not _is_valid_pbk("!" * 44)
+    # валидный base64url ~44 символа
+    import base64
+    ok = base64.urlsafe_b64encode(b"a" * 32).decode().rstrip("=")
+    assert _is_valid_pbk(ok)
+
+
+@check("singbox: _is_valid_sid")
+def t62():
+    from straysifter.core.singbox import _is_valid_sid
+    assert _is_valid_sid("")
+    assert _is_valid_sid("abcd1234")
+    assert not _is_valid_sid("hello world")
+    assert not _is_valid_sid("z" * 8)
+    assert not _is_valid_sid("a" * 20)
+
+
+@check("singbox: _is_valid_uuid")
+def t63():
+    from straysifter.core.singbox import _is_valid_uuid
+    assert _is_valid_uuid("11111111-2222-3333-4444-555555555555")
+    assert _is_valid_uuid("11111111222233334444555555555555")
+    assert not _is_valid_uuid("")
+    assert not _is_valid_uuid("not-a-uuid")
+
+
+@check("singbox: _normalize_fp")
+def t64():
+    from straysifter.core.singbox import _normalize_fp
+    assert _normalize_fp("") == "chrome"
+    assert _normalize_fp("firefox") == "firefox"
+    assert _normalize_fp("hellochrome_120") == "chrome"
+    assert _normalize_fp("randomized") == "randomized"
+
+
+@check("singbox: _normalize_ss_method")
+def t65():
+    from straysifter.core.singbox import _normalize_ss_method
+    assert _normalize_ss_method("aes-256-gcm") == "aes-256-gcm"
+    assert _normalize_ss_method("chacha20-poly1305") == "chacha20-ietf-poly1305"
+    assert _normalize_ss_method("xchacha20-poly1305") == "xchacha20-ietf-poly1305"
+    assert _normalize_ss_method("garbage") is None
+    assert _normalize_ss_method("") is None
+
+
+@check("singbox: _normalize_vmess_security")
+def t66():
+    from straysifter.core.singbox import _normalize_vmess_security
+    assert _normalize_vmess_security("auto") == "auto"
+    assert _normalize_vmess_security("aes-128-gcm") == "aes-128-gcm"
+    assert _normalize_vmess_security("garbage") == "auto"
+
+
+@check("singbox: _extract_outbound_index")
+def t67():
+    from straysifter.core.singbox import _extract_outbound_index
+    err = ("FATAL[0000] create service: initialize outbound[776]: "
+           "unsupported flow")
+    assert _extract_outbound_index(err) == 776
+    assert _extract_outbound_index("nothing here") is None
+
+
+@check("singbox: build_outbound vless reality валидный")
+def t68():
+    from straysifter.core.parsers import parse_any
+    from straysifter.core.singbox import build_outbound
+    import base64
+    pbk = base64.urlsafe_b64encode(b"x" * 32).decode().rstrip("=")
+    p = parse_any(
+        f"vless://11111111-2222-3333-4444-555555555555@1.2.3.4:443"
+        f"?type=tcp&security=reality&pbk={pbk}&sid=abcd1234&sni=x.com#N"
+    )
+    ob = build_outbound(p, "p0")
+    assert ob is not None
+    assert ob["type"] == "vless"
+    assert ob["uuid"] == "11111111-2222-3333-4444-555555555555"
+    assert ob["tls"]["reality"]["public_key"] == pbk
+    assert ob["tls"]["reality"]["short_id"] == "abcd1234"
+
+
+@check("singbox: build_outbound vless xhttp → None")
+def t69():
+    from straysifter.core.parsers import parse_any
+    from straysifter.core.singbox import build_outbound
+    p = parse_any(
+        "vless://11111111-2222-3333-4444-555555555555@1.2.3.4:443"
+        "?type=xhttp&security=tls&sni=x.com#N"
+    )
+    assert p is not None
+    assert build_outbound(p, "p0") is None
+
+
+@check("singbox: build_outbound битый pbk → None")
+def t70():
+    from straysifter.core.parsers import parse_any
+    from straysifter.core.singbox import build_outbound
+    p = parse_any(
+        "vless://11111111-2222-3333-4444-555555555555@1.2.3.4:443"
+        "?type=tcp&security=reality&pbk=bad&sid=zz&sni=x.com#N"
+    )
+    assert p is not None
+    assert build_outbound(p, "p0") is None
+
+
+@check("singbox: build_outbound ss chacha alias")
+def t71():
+    from straysifter.core.parsers import parse_any
+    from straysifter.core.singbox import build_outbound
+    import base64
+    creds = base64.urlsafe_b64encode(
+        b"chacha20-poly1305:pass").decode().rstrip("=")
+    p = parse_any(f"ss://{creds}@1.2.3.4:8388#N")
+    ob = build_outbound(p, "p0")
+    assert ob is not None
+    assert ob["method"] == "chacha20-ietf-poly1305"
+
+
 # ── CLI ──────────────────────────────────────────────────────────────
 
 @check("cli: build_parser + все subcommands")
@@ -313,8 +455,11 @@ def t50():
         p.parse_args([cmd])
     p.parse_args(["collect"])
     p.parse_args(["collect", "--no-geoip", "--exclude-country", "RU,CN"])
+    p.parse_args(["collect", "--mode", "singbox"])
+    p.parse_args(["collect", "--mode", "tcp+tls"])
     p.parse_args(["inspect", "pattern"])
     p.parse_args(["export-source", "pattern"])
+    p.parse_args(["export-source", "pattern", "--mode", "singbox"])
 
 
 @check("service: __main__ build_parser")
@@ -358,12 +503,23 @@ def _net():
         from straysifter.core.config import GeoIPConfig
         with tempfile.TemporaryDirectory() as td:
             r = GeoIPResolver(GeoIPConfig(), Path(td))
-            # MIN_HTTP_BATCH=3 — нужно минимум 3 незнакомых IP
             m = r.resolve_countries(["1.1.1.1", "8.8.8.8", "77.88.8.8"])
             assert len(m) >= 1, f"got nothing: {m}"
             print("      → ", m)
 
+    @check("net: sing-box binary present")
+    def n4():
+        from straysifter.core.singbox import find_binary
+        b = find_binary()
+        assert b is not None, ("sing-box.exe не найден в bin/sing-box/. "
+                               "Скачай и положи, или пропусти этот тест")
+        print(f"      → {b}")
+
     n1(); n2(); n3()
+    try:
+        n4()
+    except AssertionError as e:
+        print(f"[SKIP] net: sing-box binary present: {e}")
 
 
 def main():
@@ -375,7 +531,9 @@ def main():
 
     for t in (t1, t2, t3, t4, t5, t6, t7,
               t10, t11, t12, t13, t14, t15, t16, t17, t18, t19, t20,
-              t21, t22, t30, t31, t40, t41, t42, t50, t51):
+              t21, t22, t30, t31, t40, t41, t42,
+              t60, t61, t62, t63, t64, t65, t66, t67, t68, t69, t70, t71,
+              t50, t51):
         t()
 
     if args.net:
