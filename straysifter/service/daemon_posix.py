@@ -157,8 +157,15 @@ def stop() -> int:
         return 0
 
     print(f"Останавливаю PID {pid}...")
+    # killpg убивает всю группу процессов демона, включая дочерний
+    # sing-box. В _daemonize вызывается setsid(), значит PGID == PID.
+    # Без этого sing-box остаётся сиротой после stop.
     try:
-        os.kill(pid, signal.SIGKILL)
+        try:
+            pgid = os.getpgid(pid)
+        except ProcessLookupError:
+            pgid = pid
+        os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
         _remove_pidfile()
         print("Уже не работает.")

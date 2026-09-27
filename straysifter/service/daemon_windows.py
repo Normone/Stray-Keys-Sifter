@@ -143,8 +143,10 @@ def stop() -> int:
         return 0
 
     print(f"Останавливаю PID {pid}...")
+    # /T — убить дерево (демон → sing-box и другие дочерние).
+    # Без /T sing-box.exe остаётся сиротой и висит после stop.
     subprocess.run(
-        ["taskkill", "/PID", str(pid), "/F"],
+        ["taskkill", "/PID", str(pid), "/T", "/F"],
         capture_output=True, text=True, check=False,
     )
     _remove_pidfile()

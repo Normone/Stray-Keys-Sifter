@@ -483,6 +483,29 @@ def _delay_via_api(port: int, tag: str, timeout_ms: int) -> int | None:
         return None
 
 
+def _kill_proc(proc: subprocess.Popen | None) -> None:
+    """Best-effort прибить процесс sing-box.
+
+    На Windows process.kill() посылает TerminateProcess, что для
+    sing-box эквивалентно жёсткому убийству — сирот не оставляет.
+    На POSIX сначала SIGTERM, потом SIGKILL.
+    """
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+    except Exception:
+        pass
+
+
 def _try_start(binary: Path, outbounds: list[dict]):
     api_port = _pick_free_port()
     config = _build_config(outbounds, api_port)
@@ -522,6 +545,11 @@ def _try_start(binary: Path, outbounds: list[dict]):
     err_f.close()
 
     if not _wait_for_api(proc, api_port, timeout=20.0):
+        # Не оставляем сироту: если процесс жив, но API не ответил —
+        # убиваем принудительно. Иначе процесс останется висеть после
+        # возврата None, съедая порт и память, а на следующем batch'е
+        # рядом появится второй.
+        _kill_proc(proc)
         return None, api_port, cfg_path, err_path
 
     return proc, api_port, cfg_path, err_path
@@ -573,6 +601,13 @@ def _check_batch(
     done_offset: int,
     total: int,
 ) -> tuple[list[tuple[ProxyInfo, int]], int]:
+    """Проверяет один batch.
+
+    Возвращает (results, dropped_or_skipped).
+
+    Если sing-box падает на `outbound[N]`, выкидываем pairs[N] и
+    перезапускаем. Так один битый ключ не уносит остальные 4999.
+    """
     pairs: list[tuple[str, ProxyInfo, dict]] = []
     skipped = 0
     for i, info in enumerate(infos):
@@ -617,15 +652,7 @@ def _check_batch(
             if not pairs:
                 return [], skipped
         finally:
-            if proc is not None:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=3)
-                except Exception:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
+            _kill_proc(proc)
             for p in (cfg_path, err_path):
                 try:
                     os.unlink(p)
