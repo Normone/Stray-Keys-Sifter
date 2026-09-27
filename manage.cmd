@@ -133,6 +133,8 @@ echo  Collect keys via TCP: fetch + TCP check + GeoIP + export.
 echo  Fast, wide list. 3-7 minutes.
 echo.
 python -m straysifter -v collect
+echo.
+pause
 goto MAIN
 
 :COLLECT_SINGBOX
@@ -141,6 +143,8 @@ echo  Collect keys via sing-box: fetch + real HTTP check + GeoIP + export.
 echo  Slow, narrow list. Hours. Requires bin/sing-box/sing-box.exe.
 echo.
 python -m straysifter -v collect --mode singbox
+echo.
+pause
 goto MAIN
 
 :INSPECT
@@ -152,6 +156,8 @@ set "PAT="
 set /p "PAT=Source: "
 if "!PAT!"=="" goto MAIN
 python -m straysifter -v inspect "!PAT!"
+echo.
+pause
 goto MAIN
 
 :SOURCES
@@ -159,16 +165,22 @@ cls
 echo  Fetch sources into archive, without checks.
 echo.
 python -m straysifter -v sources
+echo.
+pause
 goto MAIN
 
 :SOURCES_STATS
 cls
 python -m straysifter sources-stats
+echo.
+pause
 goto MAIN
 
 :EXPORT
 cls
 python -m straysifter export
+echo.
+pause
 goto MAIN
 
 :EXPORT_SOURCE
@@ -180,16 +192,22 @@ set "PAT="
 set /p "PAT=Source: "
 if "!PAT!"=="" goto MAIN
 python -m straysifter export-source "!PAT!"
+echo.
+pause
 goto MAIN
 
 :STATUS
 cls
 python -m straysifter status
+echo.
+pause
 goto MAIN
 
 :HISTORY
 cls
 python -m straysifter history
+echo.
+pause
 goto MAIN
 
 :CLEAN
@@ -206,6 +224,8 @@ if /i "!X!"=="W" python -m straysifter clean --working
 if /i "!X!"=="H" python -m straysifter clean --history
 if /i "!X!"=="S" python -m straysifter clean --sources
 if /i "!X!"=="B" python -m straysifter clean --working --history --sources
+echo.
+pause
 goto MAIN
 
 
@@ -214,6 +234,8 @@ cls
 echo  Download mmdb for offline GeoIP (GitHub mirrors, then db-ip.com).
 echo.
 python -m straysifter geoip-update
+echo.
+pause
 goto MAIN
 
 :GEOIP_CLEAR
@@ -222,32 +244,44 @@ echo  Clear geoip cache (data/geoip_cache.json).
 set "Y="
 set /p "Y=Confirm [Y/N]: "
 if /i "!Y!"=="Y" python -m straysifter geoip-clear
+echo.
+pause
 goto MAIN
 
 
 :SVC_INSTALL
 cls
 python -m straysifter.service install
+echo.
+pause
 goto SVC_MENU
 
 :SVC_START
 cls
 python -m straysifter.service start
+echo.
+pause
 goto SVC_MENU
 
 :SVC_STOP
 cls
 python -m straysifter.service stop
+echo.
+pause
 goto SVC_MENU
 
 :SVC_RESTART
 cls
 python -m straysifter.service restart
+echo.
+pause
 goto SVC_MENU
 
 :SVC_STATUS
 cls
 python -m straysifter.service status
+echo.
+pause
 goto SVC_MENU
 
 :SVC_UNINSTALL
@@ -259,6 +293,8 @@ set /p "Y=Confirm [Y/N]: "
 if /i "!Y!"=="Y" (
     python -m straysifter.service uninstall
 )
+echo.
+pause
 goto SVC_MENU
 
 :SET_MODE
@@ -292,6 +328,8 @@ set "Y="
 set /p "Y=Restart service now? [Y/N]: "
 if /i "!Y!"=="Y" python -m straysifter.service restart
 set "MODE="
+echo.
+pause
 goto SVC_MENU
 
 
@@ -300,6 +338,8 @@ cls
 if not exist straysifter.log (
     echo  straysifter.log not found.
     echo  Start service (Service menu - 2) or run a cycle (option 1) first.
+    echo.
+    pause
     goto VIEW_MENU
 )
 echo  Watching straysifter.log. Ctrl+C to exit.
@@ -314,6 +354,8 @@ if exist data (
 )
 cls
 echo  data folder does not exist. Run a cycle (option 1) first.
+echo.
+pause
 goto VIEW_MENU
 
 :OPEN_EXPORTS
@@ -323,6 +365,8 @@ if exist data\exports (
 )
 cls
 echo  data\exports does not exist.
+echo.
+pause
 goto VIEW_MENU
 
 :OPEN_CHECKED
@@ -333,4 +377,6 @@ if exist data\exports\checked.txt (
 cls
 echo  checked.txt not created yet.
 echo  Run a cycle (option 1) or export (option 6).
+echo.
+pause
 goto VIEW_MENU

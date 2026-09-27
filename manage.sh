@@ -9,6 +9,10 @@ if ! command -v "$PY" >/dev/null 2>&1; then
     PY=python
 fi
 
+pause_screen() {
+    read -rp "Press Enter to continue..." _
+}
+
 svc() {
     "$PY" -m straysifter.service "$@"
 }
@@ -17,6 +21,7 @@ open_path() {
     local p="$1"
     if [ ! -e "$p" ]; then
         echo "not found: $p"
+        pause_screen
         return
     fi
     xdg-open "$p" 2>/dev/null || open "$p" 2>/dev/null || \
@@ -45,7 +50,7 @@ set_mode() {
     case "$Y" in
         [Yy]) svc restart ;;
     esac
-    read -rp "Press Enter to continue..." _
+    pause_screen
 }
 
 service_menu() {
@@ -73,14 +78,14 @@ EOF
         read -rp "Choice: " CH
         case "$CH" in
             0) return ;;
-            1) svc install; read -rp "Press Enter..." _ ;;
-            2) svc start; read -rp "Press Enter..." _ ;;
-            3) svc stop; read -rp "Press Enter..." _ ;;
-            4) svc restart; read -rp "Press Enter..." _ ;;
-            5) svc status; read -rp "Press Enter..." _ ;;
+            1) svc install; pause_screen ;;
+            2) svc start; pause_screen ;;
+            3) svc stop; pause_screen ;;
+            4) svc restart; pause_screen ;;
+            5) svc status; pause_screen ;;
             6) read -rp "Uninstall service? Data and config are NOT touched. [Y/N]: " Y
                case "$Y" in
-                   [Yy]) svc uninstall; read -rp "Press Enter..." _ ;;
+                   [Yy]) svc uninstall; pause_screen ;;
                esac ;;
             7) set_mode ;;
             *) echo "Unknown choice"; sleep 1 ;;
@@ -112,18 +117,18 @@ EOF
             0) return ;;
             1) if [ ! -f straysifter.log ]; then
                    echo "straysifter.log not found."
-                   read -rp "Press Enter..." _
+                   pause_screen
                else
                    echo "Watching straysifter.log. Ctrl+C to exit."
                    tail -f straysifter.log
                fi ;;
-            2) open_path data; read -rp "Press Enter..." _ ;;
-            3) open_path data/exports; read -rp "Press Enter..." _ ;;
+            2) open_path data ;;
+            3) open_path data/exports ;;
             4) if [ -f data/exports/checked.txt ]; then
                    "${EDITOR:-less}" data/exports/checked.txt
                else
                    echo "checked.txt not created."
-                   read -rp "Press Enter..." _
+                   pause_screen
                fi ;;
             *) echo "Unknown choice"; sleep 1 ;;
         esac
@@ -166,25 +171,25 @@ EOF
         read -rp "Choice: " CH
         case "$CH" in
             0) exit 0 ;;
-            1) clear; "$PY" -m straysifter -v collect; read -rp "Press Enter..." _ ;;
-            2) clear; "$PY" -m straysifter -v collect --mode singbox; read -rp "Press Enter..." _ ;;
+            1) clear; "$PY" -m straysifter -v collect; pause_screen ;;
+            2) clear; "$PY" -m straysifter -v collect --mode singbox; pause_screen ;;
             3) clear
                read -rp "Part of source URL (e.g. update): " PAT
                if [ -n "$PAT" ]; then
                    "$PY" -m straysifter -v inspect "$PAT"
-                   read -rp "Press Enter..." _
+                   pause_screen
                fi ;;
-            4) clear; "$PY" -m straysifter -v sources; read -rp "Press Enter..." _ ;;
-            5) clear; "$PY" -m straysifter sources-stats; read -rp "Press Enter..." _ ;;
-            6) clear; "$PY" -m straysifter export; read -rp "Press Enter..." _ ;;
+            4) clear; "$PY" -m straysifter -v sources; pause_screen ;;
+            5) clear; "$PY" -m straysifter sources-stats; pause_screen ;;
+            6) clear; "$PY" -m straysifter export; pause_screen ;;
             7) clear
                read -rp "Part of source URL (e.g. update): " PAT
                if [ -n "$PAT" ]; then
                    "$PY" -m straysifter export-source "$PAT"
-                   read -rp "Press Enter..." _
+                   pause_screen
                fi ;;
-            8) clear; "$PY" -m straysifter status; read -rp "Press Enter..." _ ;;
-            9) clear; "$PY" -m straysifter history; read -rp "Press Enter..." _ ;;
+            8) clear; "$PY" -m straysifter status; pause_screen ;;
+            9) clear; "$PY" -m straysifter history; pause_screen ;;
             [Cc]) clear
                   read -rp "Clear [W]orking / [H]istory / [S]ource-stats / [B]oth / [N]othing: " X
                   case "$X" in
@@ -193,14 +198,14 @@ EOF
                       [Ss]) "$PY" -m straysifter clean --sources ;;
                       [Bb]) "$PY" -m straysifter clean --working --history --sources ;;
                   esac
-                  read -rp "Press Enter..." _ ;;
-            [Gg]) clear; "$PY" -m straysifter geoip-update; read -rp "Press Enter..." _ ;;
+                  pause_screen ;;
+            [Gg]) clear; "$PY" -m straysifter geoip-update; pause_screen ;;
             [Hh]) clear
                   read -rp "Clear geoip cache? [Y/N]: " Y
                   case "$Y" in
                       [Yy]) "$PY" -m straysifter geoip-clear ;;
                   esac
-                  read -rp "Press Enter..." _ ;;
+                  pause_screen ;;
             [Ss]) service_menu ;;
             [Vv]) view_menu ;;
             *) echo "Unknown choice"; sleep 1 ;;
