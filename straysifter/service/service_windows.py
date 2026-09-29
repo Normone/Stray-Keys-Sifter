@@ -95,13 +95,22 @@ def _kill_singbox_orphans() -> None:
     """Убить оставшиеся sing-box.exe от предыдущих batch'ей.
 
     sing-box запускается как дочерний процесс python'а. При жёстком
-    kill'е питона он может остаться сиротой. Чистим перед выходом.
+    kill'е питона (SCM TerminateProcess после 30с stop-timeout) он
+    остаётся сиротой. Чистим:
+      - при старте службы (от прошлых крэшей);
+      - в конце _run() после graceful stop.
     """
     try:
-        subprocess.run(
+        r = subprocess.run(
             ["taskkill", "/IM", "sing-box.exe", "/F"],
             capture_output=True, text=True, check=False, timeout=10,
+            encoding="cp866", errors="replace",
         )
+        # Если sing-box не было — taskkill вернёт 128. Не шумим.
+        if r.returncode == 0:
+            logging.getLogger("straysifter.service").info(
+                "service(windows): killed orphan sing-box.exe",
+            )
     except Exception:
         pass
 
@@ -149,6 +158,12 @@ if _HAS_PYWIN32:
             log.info("service(windows): start (cwd=%s, user=%s)",
                      home, os.environ.get("USERNAME", "?"))
 
+            # Чистим возможные сироты от прошлых запусков, которые
+            # SCM убил TerminateProcess'ом раньше, чем _run() успел
+            # сделать taskkill. Без этого на старте рядом с новым
+            # sing-box висит старый-мёртвый.
+            _kill_singbox_orphans()
+
             from straysifter.core import load_config
             from straysifter.service.runner import Runner
 
@@ -192,6 +207,8 @@ if _HAS_PYWIN32:
                     "service(windows): runner did not stop in %ds, "
                     "forcing exit", STOP_GRACE_SEC,
                 )
+            # Убиваем sing-box, если runner ещё в batch'е — иначе
+            # SCM прибьёт нас раньше, чем сюда дойдёт finally.
             _kill_singbox_orphans()
             log.info("service(windows): stopped")
 
@@ -287,14 +304,6 @@ def install() -> int:
         print(f"✗ не удалось прописать env: {e}")
         print("  служба установлена, но может не найти config.json")
         return 1
-
-    # Покажем, что SCM собирается запускать — для самопроверки.
-    # Вывод sc.exe в UTF-16/cp866, поэтому парсим не строки,
-    # а показываем сырой вывод — в PowerShell он рендерится нормально.
-    qc = subprocess.run(
-        ["sc", "qc", SERVICE_NAME],
-        capture_output=True, text=True, check=False,
-    )
 
     print(f"✓ служба '{SERVICE_DISPLAY_NAME}' установлена")
     print(f"  имя:    {SERVICE_NAME}")
