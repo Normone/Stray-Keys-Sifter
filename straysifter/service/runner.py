@@ -30,10 +30,11 @@ class Runner:
             recs = self.storage.replace_working(res.checked)
             log.info("cycle: alive=%d, db=%d", len(res.checked), len(recs))
 
-            # exclude_countries: тот же фильтр, что в CLI-пути
-            # (cmd_collect). Без него сервис/daemon экспортирует
+            # exclude_countries — тот же фильтр, что в CLI-пути
+            # (cmd_collect). Без него сервис/daemon экспортировал бы
             # RU-ключи, хотя в config.json они исключены.
             excluded = {c.upper() for c in self.cfg.checks.exclude_countries}
+
             self.storage.export_checked(
                 res.checked, parse_country, country_flag,
                 exclude_countries=excluded,
@@ -41,6 +42,7 @@ class Runner:
             if res.hysteria_candidates:
                 self.storage.export_hysteria_candidates(
                     res.hysteria_candidates, parse_country, country_flag,
+                    exclude_countries=excluded,
                 )
 
             stats = self.storage.load_source_stats()

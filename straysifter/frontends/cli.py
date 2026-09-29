@@ -137,6 +137,7 @@ def cmd_collect(args) -> int:
     if res.hysteria_candidates:
         hp = st.export_hysteria_candidates(
             res.hysteria_candidates, parse_country, country_flag,
+            exclude_countries=excluded,
         )
         if hp:
             print(f"Экспорт (hysteria, без проверки): {hp}  "
@@ -199,7 +200,10 @@ def cmd_export(args) -> int:
     )
     print(f"✓ {p}")
 
-    hp = st.export_hysteria_candidates(hysteria, parse_country, country_flag)
+    hp = st.export_hysteria_candidates(
+        hysteria, parse_country, country_flag,
+        exclude_countries=excluded,
+    )
     if hp:
         print(f"✓ {hp}  (hysteria, без проверки)")
     if excluded:
@@ -325,7 +329,6 @@ def _walk_for_set(data: dict, path: list[str], value):
     leaf = path[-1]
     old = node.get(leaf)
     new = _coerce_value(value, old)
-    # Спец-валидация для известных enum-полей
     if path == ["checks", "mode"]:
         if new not in _MODE_CHOICES:
             raise ValueError(
@@ -367,7 +370,7 @@ def cmd_config_set(args) -> int:
     if path == ["checks", "mode"]:
         print("  сервис читает mode при старте. Если сервис запущен — "
               "перезапусти его:")
-        print("    straysifter-service restart")
+        print("    straysifter-service restart-service   (или restart)")
     return 0
 
 

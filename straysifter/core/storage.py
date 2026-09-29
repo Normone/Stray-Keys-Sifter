@@ -384,12 +384,17 @@ class Storage:
         infos: list[ProxyInfo],
         country_of: callable,
         flag_of: callable,
+        *,
+        exclude_countries: set[str] | None = None,
     ) -> Path | None:
         """Все hysteria/hysteria2-ключи без проверки живости.
 
         TCP-connect к ним бессмысленен (UDP-протокол), полноценная
         QUIC-проверка требует sing-box. Отдаём отдельным файлом —
         пользователь сам импортирует в клиент и прогонит тест.
+
+        exclude_countries — те же ISO-коды, что и в export_checked.
+        Применяется фильтр по стране (CDN-фронты с XX не отсеиваются).
         """
         if not infos:
             return None
@@ -401,6 +406,29 @@ class Storage:
                 continue
             seen.add(i.dedup_key)
             unique.append(i)
+
+        if exclude_countries:
+            excluded_upper = {c.upper() for c in exclude_countries}
+            before = len(unique)
+            unique = [
+                i for i in unique
+                if (country_of(i) or "XX").upper() not in excluded_upper
+            ]
+            dropped = before - len(unique)
+            if dropped:
+                log.info(
+                    "storage: hysteria candidates excluded %d by country %s",
+                    dropped, sorted(excluded_upper),
+                )
+            if not unique:
+                # Не создаём пустой файл. Если старый был — сносим,
+                # чтобы он не висел от прошлого прогона.
+                stale = self.exports_dir / "hysteria2_candidates.txt"
+                try:
+                    stale.unlink()
+                except FileNotFoundError:
+                    pass
+                return None
 
         p = self.exports_dir / "hysteria2_candidates.txt"
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
