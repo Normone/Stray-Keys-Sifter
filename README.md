@@ -38,7 +38,9 @@ Hysteria/hysteria2 — UDP-протоколы (QUIC). В TCP-режиме про
 - Экспорт: общий `checked.txt` + отдельный файл на каждую схему + `hysteria2_candidates.txt` (только в TCP-режиме).
 - Статистика источников: сколько найдено, сколько уникальных, сколько живых, сколько есть только здесь, когда последний раз менялось, сколько уникально-живых.
 - История прогонов.
-- Фоновый сервис: Windows — detached subprocess, Linux/macOS — двойной fork. Без systemd и SCM.
+- Два способа работы в фоне:
+  - **Windows Service** (pywin32, SCM) — правильный вариант для Windows, auto-start, restart-on-failure.
+  - **Daemon** (detached subprocess на Windows, двойной fork на Linux) — fallback без внешних зависимостей.
 - `config-set` / `config-show` — правка `config.json` из CLI без открытия файла.
 
 ## Установка
@@ -73,6 +75,24 @@ straysifter geoip-update
 На Linux/macOS — `sing-box-<version>-linux-amd64.tar.gz` (или подходящую архитектуру), распаковать в `bin/sing-box/sing-box` и сделать `chmod +x`.
 
 Путь можно переопределить через `checks.singbox_path` в `config.json` или env-переменную `SIFTER_SINGBOX_PATH`.
+
+### Опционально — Windows Service (pywin32)
+
+Только для Windows, если хочешь, чтобы фон работал как настоящая служба SCM. Что даёт:
+
+- Переживает sleep, logout, смену пользователя, reboot.
+- SCM следит за процессом и рестартует при падении.
+- Пишет `Service started` / `Service stopped` в Event Viewer.
+- Общая система со всеми остальными службами (управление через `sc`, `services.msc`, `Get-Service`).
+
+Установка:
+
+```powershell
+pip install pywin32
+python "<path-to-python>\Scripts\pywin32_postinstall.py" -install    # от админа
+```
+
+Второй шаг важен: без него SCM не сможет зарегистрировать ServiceMain, и `start-service` вернёт ошибку 1053.
 
 ## Быстрый старт
 
@@ -126,41 +146,56 @@ cat data/exports/hysteria2_candidates.txt     # только в TCP-режиме
 | `--from URL` | `geoip-update` | Скачать mmdb из своего источника (без зеркал и fallback) |
 | `--working` / `--history` / `--sources` | `clean` | Что именно очистить |
 
-## Управление сервисом
+## Фоновая работа
 
-Одна и та же команда на всех ОС:
+Два режима, оба через `straysifter-service`:
+
+### Windows Service (pywin32, SCM) — рекомендуемый на Windows
+
+```powershell
+straysifter-service install-service    # зарегистрировать в SCM (от админа)
+straysifter-service start-service
+straysifter-service stop-service
+straysifter-service restart-service
+straysifter-service status-service
+straysifter-service remove-service     # удалить из SCM (от админа)
+straysifter-service debug-service      # запустить логику в консоли (без установки)
+```
+
+Служба ставится от `LocalSystem`, `AUTO_START`, с `Restart-on-failure` (3 попытки с интервалом 60 секунд). Пути проекта передаются через env-переменные службы (`straysifter_HOME`, `SIFTER_DATA`, `PYTHONPATH`), потому что рабочий каталог `LocalSystem` — `C:\Windows\System32`.
+
+Логи — `straysifter.log` в корне проекта, ротация 5 MB × 5. Плюс `Service started` / `Service stopped` в Event Viewer.
+
+### Daemon (без внешних зависимостей) — fallback
 
 ```bash
-straysifter-service install       # поставить + создать config.json
+straysifter-service install       # подготовить (создать config.json)
 straysifter-service start
 straysifter-service stop
 straysifter-service restart
 straysifter-service status
-straysifter-service uninstall     # остановить и удалить PID-файл
-straysifter-service debug         # раннер в консоли (Ctrl+C — выход)
+straysifter-service uninstall
+straysifter-service debug         # запустить в консоли
 ```
 
 Реализация по платформам:
 
-- **Windows** — detached subprocess (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`). Проверка живости через `OpenProcess`/`GetExitCodeProcess` (`STILL_ACTIVE=259`). Остановка — мгновенный `taskkill /F`.
-- **Linux/macOS** — двойной fork (`os.fork` × 2 + `setsid`). Проверка живости через `os.kill(pid, 0)`. Остановка — мгновенный `SIGKILL`.
+- **Windows** — detached subprocess (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`). Проверка живости через `OpenProcess`/`GetExitCodeProcess` (`STILL_ACTIVE=259`). Остановка — `taskkill /PID <pid> /T /F` (убивает дерево, включая sing-box).
+- **Linux/macOS** — двойной fork (`os.fork` × 2 + `setsid`). Проверка живости через `os.kill(pid, 0)`. Остановка — `os.killpg(pgid, SIGKILL)`.
 
-Graceful-остановка посреди активного цикла не поддерживается: цикл дорабатывает до конца, форс-килл обрывает его. Недописанные данные не теряются — все JSON-файлы пишутся атомарно в самом конце.
+Этот режим **не переживает reboot** — если нужно автозапускать, добавь в Task Scheduler (`schtasks`) или `crontab @reboot`.
 
-Логи — `straysifter.log` в корне проекта, ротация 5 MB × 5. Пишет **только сервис**, не ручные запуски.
-PID — `straysifter.pid`.
-Автозапуск при загрузке — на откуп системе: Task Scheduler, `cron @reboot`, launchd.
+**Не запускай одновременно Windows Service и Daemon.** Они будут конфликтовать (два runner'а, два процесса, два писателя в `straysifter.log`).
 
 ## Меню управления
 
-`manage.cmd` (Windows) или `./manage.sh` (Linux/macOS) — текстовое меню для всех команд выше. Пункты 1 и 2 — разные режимы проверки (TCP и sing-box). Сервисные команды и просмотр вынесены в подменю (S и V).
+`manage.cmd` (Windows) или `./manage.sh` (Linux/macOS) — текстовое меню. Пункты 1 и 2 — разные режимы проверки (TCP и sing-box).
 
-```bash
-chmod +x manage.sh
-./manage.sh
-```
+**`manage.cmd`:**
+- `S` — Daemon menu (старый, detached)
+- `W` — Windows Service menu (pywin32, SCM). Требует прав администратора для install/start/stop/remove, `manage.cmd` сам предложит перезапуститься с UAC.
 
-Меню не требует ввода команд — выбор пункта цифрой или буквой.
+**`manage.sh`** — только Daemon menu (POSIX-демон).
 
 ## Смена режима сервиса
 
@@ -169,10 +204,10 @@ chmod +x manage.sh
 ```bash
 # через CLI
 straysifter config-set checks.mode singbox
-straysifter-service restart
+straysifter-service restart-service    # или restart, если daemon
 ```
 
-Или через `manage.cmd` / `manage.sh` — пункт **S** (Service menu) → **7** (Set service mode). Там же предлагается сразу перезапустить сервис.
+Или через `manage.cmd` — пункт `F` в главном меню.
 
 Команда `config-set` работает с любым полем по dotted path:
 
@@ -540,8 +575,9 @@ Stray-Keys-Sifter/                    # корень (git, config.json, data/, �
 │       ├── __init__.py
 │       ├── __main__.py               # straysifter-service <install|start|stop|...>
 │       ├── runner.py                 # фоновый цикл
-│       ├── daemon_posix.py           # двойной fork
-│       └── daemon_windows.py         # detached subprocess
+│       ├── service_windows.py        # Windows Service (pywin32, SCM)
+│       ├── daemon_windows.py         # detached subprocess (fallback)
+│       └── daemon_posix.py           # двойной fork (fallback на Linux)
 ├── bin/
 │   └── sing-box/                     # бинарник sing-box (опционально)
 ├── pyproject.toml
