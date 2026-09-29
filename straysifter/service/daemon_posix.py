@@ -1,4 +1,7 @@
-"""POSIX-демон: двойной fork."""
+"""POSIX-демон: двойной fork.
+
+Fallback, если systemd нет или не хочется его ставить.
+"""
 from __future__ import annotations
 
 import logging
@@ -91,7 +94,7 @@ def install() -> int:
     print("✓ daemon(posix) готов")
     print(f"  PID : {_pid_file()}")
     print(f"  Лог : {_log_file()}")
-    print("  Старт: python -m straysifter.service start")
+    print("  Старт: straysifter-service start")
     return 0
 
 
@@ -157,9 +160,6 @@ def stop() -> int:
         return 0
 
     print(f"Останавливаю PID {pid}...")
-    # killpg убивает всю группу процессов демона, включая дочерний
-    # sing-box. В _daemonize вызывается setsid(), значит PGID == PID.
-    # Без этого sing-box остаётся сиротой после stop.
     try:
         try:
             pgid = os.getpgid(pid)
@@ -187,17 +187,8 @@ def status() -> int:
         return 1
     pid = _get_pid()
     if pid:
-        print(f"✓ Запущен (PID {pid})")
+        print(f"✓ daemon(posix) запущен (PID {pid})")
         print(f"  Лог: {_log_file()}")
         return 0
-    print("✗ Не запущен")
-    if _log_file().exists():
-        try:
-            lines = _log_file().read_text(encoding="utf-8").splitlines()[-5:]
-            if lines:
-                print("  Последние строки:")
-                for line in lines:
-                    print("   ", line)
-        except Exception:
-            pass
+    print("✗ daemon(posix) не запущен")
     return 1

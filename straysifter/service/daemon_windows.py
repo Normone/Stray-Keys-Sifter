@@ -1,4 +1,8 @@
-"""Windows-бэкенд «демона» без SCM."""
+"""Windows-бэкенд «демона» без SCM (detached subprocess).
+
+Fallback, если pywin32 нет или не хочется ставить службу.
+Правильный путь для Windows — service_windows.py (SCM).
+"""
 from __future__ import annotations
 
 import ctypes
@@ -81,7 +85,7 @@ def install() -> int:
     print("✓ daemon(windows) готов")
     print(f"  PID : {_pid_file()}")
     print(f"  Лог : {_log_file()}")
-    print("  Старт: python -m straysifter.service start")
+    print("  Старт: straysifter-service start")
     return 0
 
 
@@ -143,8 +147,8 @@ def stop() -> int:
         return 0
 
     print(f"Останавливаю PID {pid}...")
-    # /T — убить дерево (демон → sing-box и другие дочерние).
-    # Без /T sing-box.exe остаётся сиротой и висит после stop.
+    # /T — убить дерево (python + sing-box). Без /T sing-box
+    # остаётся сиротой и висит после stop.
     subprocess.run(
         ["taskkill", "/PID", str(pid), "/T", "/F"],
         capture_output=True, text=True, check=False,
@@ -163,19 +167,10 @@ def restart() -> int:
 def status() -> int:
     pid = _read_pid()
     if pid:
-        print(f"✓ Запущен (PID {pid})")
+        print(f"✓ daemon(windows) запущен (PID {pid})")
         print(f"  Лог: {_log_file()}")
         return 0
-    print("✗ Не запущен")
-    if _log_file().exists():
-        try:
-            lines = _log_file().read_text(encoding="utf-8").splitlines()[-5:]
-            if lines:
-                print("  Последние строки:")
-                for line in lines:
-                    print("   ", line)
-        except Exception:
-            pass
+    print("✗ daemon(windows) не запущен")
     return 1
 
 

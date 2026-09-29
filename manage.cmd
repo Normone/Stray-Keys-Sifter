@@ -1,7 +1,32 @@
 @echo off
 setlocal enabledelayedexpansion
+
+REM Если перезапущено с UAC — флаг --admin, стартуем сразу в меню.
+if "%~1"=="--admin" (
+    shift
+)
+
 cd /d "%~dp0"
 goto MAIN
+
+
+REM ── Проверка прав ─────────────────────────────────────────────
+:IS_ADMIN
+net session >nul 2>&1
+exit /b %errorlevel%
+
+:REQUIRE_ADMIN
+call :IS_ADMIN
+if %errorlevel%==0 exit /b 0
+echo.
+echo  This action requires administrator rights.
+echo.
+set "Y="
+set /p "Y=Restart manage.cmd as admin? [Y/N]: "
+if /i not "!Y!"=="Y" exit /b 1
+echo  Launching elevated copy...
+powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList '--admin' -Verb RunAs"
+exit /b 2
 
 
 :MAIN
@@ -27,7 +52,11 @@ echo   -- GeoIP --
 echo   G. Update mmdb
 echo   H. Clear geoip cache
 echo.
-echo   S. Service menu
+echo   -- Background --
+echo   F. Set check mode (tcp / tcp+tls / singbox)
+echo   S. Daemon menu (old, detached)
+echo   W. Windows Service menu (pywin32, SCM)
+echo.
 echo   V. View menu
 echo.
 echo   0. Exit
@@ -51,7 +80,9 @@ if "!CH!"=="9" goto HISTORY
 if /i "!CH!"=="C" goto CLEAN
 if /i "!CH!"=="G" goto GEOIP_UPDATE
 if /i "!CH!"=="H" goto GEOIP_CLEAR
-if /i "!CH!"=="S" goto SVC_MENU
+if /i "!CH!"=="F" goto SET_MODE
+if /i "!CH!"=="S" goto DAEMON_MENU
+if /i "!CH!"=="W" goto SERVICE_MENU
 if /i "!CH!"=="V" goto VIEW_MENU
 
 echo  Unknown choice.
@@ -59,20 +90,19 @@ timeout /t 1 >nul
 goto MAIN
 
 
-:SVC_MENU
+:DAEMON_MENU
 cls
 echo.
 echo  =========================================
-echo   straysifter - service
+echo   straysifter - daemon (old, detached)
 echo  =========================================
 echo.
-echo   1. Install / reinstall
+echo   1. Install
 echo   2. Start
 echo   3. Stop
 echo   4. Restart
-echo   5. Service status
-echo   6. Uninstall service
-echo   7. Set service mode (tcp / tcp+tls / singbox)
+echo   5. Status
+echo   6. Uninstall
 echo.
 echo   0. Back to main
 echo.
@@ -81,19 +111,53 @@ echo.
 set "CH="
 set /p "CH=Choice: "
 
-if "!CH!"=="" goto SVC_MENU
+if "!CH!"=="" goto DAEMON_MENU
 if "!CH!"=="0" goto MAIN
-if "!CH!"=="1" goto SVC_INSTALL
-if "!CH!"=="2" goto SVC_START
-if "!CH!"=="3" goto SVC_STOP
-if "!CH!"=="4" goto SVC_RESTART
-if "!CH!"=="5" goto SVC_STATUS
-if "!CH!"=="6" goto SVC_UNINSTALL
-if "!CH!"=="7" goto SET_MODE
+if "!CH!"=="1" goto D_INSTALL
+if "!CH!"=="2" goto D_START
+if "!CH!"=="3" goto D_STOP
+if "!CH!"=="4" goto D_RESTART
+if "!CH!"=="5" goto D_STATUS
+if "!CH!"=="6" goto D_UNINSTALL
 
 echo  Unknown choice.
 timeout /t 1 >nul
-goto SVC_MENU
+goto DAEMON_MENU
+
+
+:SERVICE_MENU
+cls
+echo.
+echo  =========================================
+echo   straysifter - Windows Service (pywin32)
+echo  =========================================
+echo.
+echo   1. Install service     (admin)
+echo   2. Start service       (admin)
+echo   3. Stop service        (admin)
+echo   4. Restart service     (admin)
+echo   5. Service status      (SCM)
+echo   6. Remove service      (admin)
+echo.
+echo   0. Back to main
+echo.
+echo  =========================================
+echo.
+set "CH="
+set /p "CH=Choice: "
+
+if "!CH!"=="" goto SERVICE_MENU
+if "!CH!"=="0" goto MAIN
+if "!CH!"=="1" goto W_INSTALL
+if "!CH!"=="2" goto W_START
+if "!CH!"=="3" goto W_STOP
+if "!CH!"=="4" goto W_RESTART
+if "!CH!"=="5" goto W_STATUS
+if "!CH!"=="6" goto W_REMOVE
+
+echo  Unknown choice.
+timeout /t 1 >nul
+goto SERVICE_MENU
 
 
 :VIEW_MENU
@@ -249,57 +313,9 @@ pause
 goto MAIN
 
 
-:SVC_INSTALL
-cls
-python -m straysifter.service install
-echo.
-pause
-goto SVC_MENU
-
-:SVC_START
-cls
-python -m straysifter.service start
-echo.
-pause
-goto SVC_MENU
-
-:SVC_STOP
-cls
-python -m straysifter.service stop
-echo.
-pause
-goto SVC_MENU
-
-:SVC_RESTART
-cls
-python -m straysifter.service restart
-echo.
-pause
-goto SVC_MENU
-
-:SVC_STATUS
-cls
-python -m straysifter.service status
-echo.
-pause
-goto SVC_MENU
-
-:SVC_UNINSTALL
-cls
-echo  Uninstall service (stop + remove pid file).
-echo  Data and config.json are NOT touched.
-set "Y="
-set /p "Y=Confirm [Y/N]: "
-if /i "!Y!"=="Y" (
-    python -m straysifter.service uninstall
-)
-echo.
-pause
-goto SVC_MENU
-
 :SET_MODE
 cls
-echo  Set service check mode.
+echo  Set check mode.
 echo.
 echo   Current:
 python -m straysifter config-show checks.mode
@@ -312,32 +328,140 @@ echo     0. Cancel
 echo.
 set "M="
 set /p "M=Choice [0-3]: "
-if "!M!"=="" goto SVC_MENU
-if "!M!"=="0" goto SVC_MENU
+if "!M!"=="" goto MAIN
+if "!M!"=="0" goto MAIN
 if "!M!"=="1" set "MODE=tcp"
 if "!M!"=="2" set "MODE=tcp+tls"
 if "!M!"=="3" set "MODE=singbox"
 if not defined MODE (
     echo  Unknown choice.
     timeout /t 1 >nul
-    goto SVC_MENU
+    goto MAIN
 )
 python -m straysifter config-set checks.mode !MODE!
-echo.
-set "Y="
-set /p "Y=Restart service now? [Y/N]: "
-if /i "!Y!"=="Y" python -m straysifter.service restart
 set "MODE="
 echo.
 pause
-goto SVC_MENU
+goto MAIN
+
+
+:D_INSTALL
+cls
+python -m straysifter.service install
+echo.
+pause
+goto DAEMON_MENU
+
+:D_START
+cls
+python -m straysifter.service start
+echo.
+pause
+goto DAEMON_MENU
+
+:D_STOP
+cls
+python -m straysifter.service stop
+echo.
+pause
+goto DAEMON_MENU
+
+:D_RESTART
+cls
+python -m straysifter.service restart
+echo.
+pause
+goto DAEMON_MENU
+
+:D_STATUS
+cls
+python -m straysifter.service status
+echo.
+pause
+goto DAEMON_MENU
+
+:D_UNINSTALL
+cls
+echo  Uninstall daemon (stop + remove pid file).
+echo  Data and config.json are NOT touched.
+set "Y="
+set /p "Y=Confirm [Y/N]: "
+if /i "!Y!"=="Y" (
+    python -m straysifter.service uninstall
+)
+echo.
+pause
+goto DAEMON_MENU
+
+
+:W_INSTALL
+cls
+call :REQUIRE_ADMIN
+if errorlevel 2 exit /b
+if errorlevel 1 goto SERVICE_MENU
+python -m straysifter.service install-service
+echo.
+pause
+goto SERVICE_MENU
+
+:W_START
+cls
+call :REQUIRE_ADMIN
+if errorlevel 2 exit /b
+if errorlevel 1 goto SERVICE_MENU
+python -m straysifter.service start-service
+echo.
+pause
+goto SERVICE_MENU
+
+:W_STOP
+cls
+call :REQUIRE_ADMIN
+if errorlevel 2 exit /b
+if errorlevel 1 goto SERVICE_MENU
+python -m straysifter.service stop-service
+echo.
+pause
+goto SERVICE_MENU
+
+:W_RESTART
+cls
+call :REQUIRE_ADMIN
+if errorlevel 2 exit /b
+if errorlevel 1 goto SERVICE_MENU
+python -m straysifter.service restart-service
+echo.
+pause
+goto SERVICE_MENU
+
+:W_STATUS
+cls
+python -m straysifter.service status-service
+echo.
+pause
+goto SERVICE_MENU
+
+:W_REMOVE
+cls
+echo  Remove Windows Service (via SCM).
+echo  Data and config.json are NOT touched.
+set "Y="
+set /p "Y=Confirm [Y/N]: "
+if /i not "!Y!"=="Y" goto SERVICE_MENU
+call :REQUIRE_ADMIN
+if errorlevel 2 exit /b
+if errorlevel 1 goto SERVICE_MENU
+python -m straysifter.service remove-service
+echo.
+pause
+goto SERVICE_MENU
 
 
 :WATCH_LOG
 cls
 if not exist straysifter.log (
     echo  straysifter.log not found.
-    echo  Start service (Service menu - 2) or run a cycle (option 1) first.
+    echo  Start any background service first.
     echo.
     pause
     goto VIEW_MENU
