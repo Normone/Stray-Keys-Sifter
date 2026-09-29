@@ -19,7 +19,6 @@ class Runner:
         self.cfg = cfg or load_config()
         self.stop_event = threading.Event()
         self.storage = Storage(self.cfg.storage.base)
-
         self._next_check = 0.0
 
     def cycle_checks(self) -> None:
@@ -30,7 +29,19 @@ class Runner:
             res = run_cycle(self.cfg, on_progress=self._log_progress)
             recs = self.storage.replace_working(res.checked)
             log.info("cycle: alive=%d, db=%d", len(res.checked), len(recs))
-            self.storage.export_checked(res.checked, parse_country, country_flag)
+
+            # exclude_countries: тот же фильтр, что в CLI-пути
+            # (cmd_collect). Без него сервис/daemon экспортирует
+            # RU-ключи, хотя в config.json они исключены.
+            excluded = {c.upper() for c in self.cfg.checks.exclude_countries}
+            self.storage.export_checked(
+                res.checked, parse_country, country_flag,
+                exclude_countries=excluded,
+            )
+            if res.hysteria_candidates:
+                self.storage.export_hysteria_candidates(
+                    res.hysteria_candidates, parse_country, country_flag,
+                )
 
             stats = self.storage.load_source_stats()
             buckets: dict[str, int] = {}
